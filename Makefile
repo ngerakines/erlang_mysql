@@ -5,3 +5,6 @@ all:
 clean:
 	(cd src;$(MAKE) clean)
 
+dist-src:
+	tar zcf mysql-1.tgz src/ include/ support/ Makefile
+
