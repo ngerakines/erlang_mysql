@@ -27,6 +27,8 @@
 -define(LONG_PASSWORD, 1).
 -define(LONG_FLAG, 4).
 -define(PROTOCOL_41, 512).
+-define(CLIENT_MULTI_STATEMENTS, 65536).
+-define(CLIENT_MULTI_RESULTS, 131072).
 -define(TRANSACTIONS, 8192).
 -define(SECURE_CONNECTION, 32768).
 -define(CONNECT_WITH_DB, 8).
@@ -121,7 +123,8 @@ make_new_auth(User, Password, Database) ->
 		     ?CONNECT_WITH_DB
 	     end,
     Caps = ?LONG_PASSWORD bor ?LONG_FLAG bor ?TRANSACTIONS bor
-	?PROTOCOL_41 bor ?SECURE_CONNECTION bor DBCaps,
+		?CLIENT_MULTI_STATEMENTS bor ?CLIENT_MULTI_RESULTS bor 
+		?PROTOCOL_41 bor ?SECURE_CONNECTION bor DBCaps,
     Maxsize = ?MAX_PACKET_SIZE,
     UserB = list_to_binary(User),
     PasswordL = size(Password),
