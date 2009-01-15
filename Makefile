@@ -6,5 +6,5 @@ clean:
 	(cd src;$(MAKE) clean)
 
 dist-src:
-	tar zcf mysql-1.tgz src/ include/ support/ Makefile
-
+	mkdir erlang_mysql-1/ && cp -rfv src include support Makefile erlang_mysql-1/
+	tar zcf mysql-1.tgz erlang_mysql-1
