@@ -12,10 +12,10 @@ dist-src:
 	tar zcf mysql-1.tgz src/ include/ support/ Makefile README
 
 package: clean
-	@mkdir mysql-$(VERSION)/ && cp -rf src/ include/ support/ Makefile README mysql-$(VERSION)
-	@COPYFILE_DISABLE=true tar zcf mysql-$(VERSION).tgz mysql-$(VERSION)
-	@rm -rf mysql-$(VERSION)/
+	@mkdir erlang_mysql-$(VERSION)/ && cp -rf src/ include/ support/ Makefile README erlang_mysql-$(VERSION)
+	@COPYFILE_DISABLE=true tar zcf erlang_mysql-$(VERSION).tgz erlang_mysql-$(VERSION)
+	@rm -rf erlang_mysql-$(VERSION)/
 		
 install:
-	mkdir -p $(prefix)/$(LIBDIR)/mysql-$(VERSION)/{ebin,include}
-	for i in ebin/*.beam; do install $$i $(prefix)/$(LIBDIR)/mysql-$(VERSION)/$$i ; done
+	mkdir -p $(prefix)/$(LIBDIR)/erlang_mysql-$(VERSION)/{ebin,include}
+	for i in ebin/*.beam; do install $$i $(prefix)/$(LIBDIR)/erlang_mysql-$(VERSION)/$$i ; done
