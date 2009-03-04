@@ -12,7 +12,7 @@ dist-src:
 	tar zcf mysql-1.tgz src/ include/ support/ Makefile README
 
 package: clean
-	@mkdir erlang_mysql-$(VERSION)/ && cp -rf src/ include/ support/ Makefile README erlang_mysql-$(VERSION)
+	@mkdir erlang_mysql-$(VERSION)/ && cp -rf src include support Makefile README erlang_mysql-$(VERSION)
 	@COPYFILE_DISABLE=true tar zcf erlang_mysql-$(VERSION).tgz erlang_mysql-$(VERSION)
 	@rm -rf erlang_mysql-$(VERSION)/
 		
