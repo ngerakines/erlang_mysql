@@ -110,6 +110,7 @@
 	 get_result_field_info/1,
 	 get_result_rows/1,
 	 get_result_affected_rows/1,
+	 get_result_insert_id/1,
 	 get_result_reason/1,
 
 	 encode/1,
@@ -475,6 +476,13 @@ get_result_rows(#mysql_result{rows=AllRows}) ->
 %%           AffectedRows::integer()
 get_result_affected_rows(#mysql_result{affectedrows=AffectedRows}) ->
     AffectedRows.
+
+%% @doc Extract the insert id from MySQL Result on insert
+%%
+%% @spec get_result_insert_id(MySQLRes::mysql_result()) ->
+%%           InsertID::integer()
+get_result_insert_id(#mysql_result{insert_id=InsertID}) ->
+	InsertID.
 
 %% @doc Extract the error Reason from MySQL Result on error
 %%

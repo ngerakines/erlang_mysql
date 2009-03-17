@@ -652,8 +652,21 @@ get_query_response(LogFun, RecvPid, Version) ->
 	    case Fieldcount of
 		0 ->
 		    %% No Tabular data
-		    <<AffectedRows:8, _Rest2/binary>> = Rest,
-		    {updated, #mysql_result{affectedrows=AffectedRows}};
+			%io:format("++++++++ OK Packet ~p~n", [Rest]),
+			{ok, AffectedRows, Rest1} = get_length_coded_binary(Rest),
+			{ok, InsertID, Rest2} = get_length_coded_binary(Rest1),
+			<<ServerStatus:16/integer, Rest3/binary>> = Rest2,
+			<<WarningCount:16/integer, Message0/binary>> = Rest3,
+			{ok, Message, _} = get_length_coded_string(Message0),
+			Res = #mysql_result{
+				affectedrows = AffectedRows, 
+				insert_id = InsertID,
+				server_status = ServerStatus,
+				warning_count = WarningCount,
+				message = Message
+			},
+			%io:format("+++++++++ Res ~p~n", [Res]),
+		    {updated, Res};
 		255 ->
 		    <<_Code:16/little, Message/binary>>  = Rest,
 		    {error, #mysql_result{error=Message}};
@@ -676,6 +689,49 @@ get_query_response(LogFun, RecvPid, Version) ->
 	    {error, #mysql_result{error=Reason}}
     end.
 
+get_length_coded_binary(<<FirstByte:8, Rest/binary>>) ->
+	if
+		FirstByte =< 250 ->
+			{ok, FirstByte, Rest};
+		FirstByte == 251 ->
+			{ok, FirstByte, Rest};
+		FirstByte == 252 ->
+			case Rest of
+				<<FollowingBytes:16/integer, Rest1/binary>> ->
+					{ok, FollowingBytes, Rest1};
+				_ ->
+					{ok, bad_packet, <<>>}
+			end;
+		FirstByte == 253 ->
+			case Rest of
+				<<FollowingBytes:24/integer, Rest1/binary>> ->
+					{ok, FollowingBytes, Rest1};
+				_ ->
+					{ok, bad_packet, <<>>}
+			end;
+		FirstByte == 254 ->
+			case Rest of
+				<<FollowingBytes:64/integer, Rest1/binary>> ->
+					{ok, FollowingBytes, Rest1};
+				_ ->
+					{ok, bad_packet, <<>>}
+			end;
+		true ->
+			{ok, bad_packet, <<>>}
+	end;
+get_length_coded_binary(_) ->
+	{ok, bad_packet, <<>>}.
+	
+get_length_coded_string(<<>>) -> {ok, "", <<>>};
+get_length_coded_string(Bin) ->
+	{ok, Length, Rest} = get_length_coded_binary(Bin),
+	case Rest of
+		<<String:Length/binary, Rest1/binary>> ->
+			{ok, binary_to_list(String), Rest1};
+		_ ->
+			{ok, bad_packet, <<>>}
+	end.	
+	
 %%--------------------------------------------------------------------
 %% Function: get_fields(LogFun, RecvPid, [], Version)
 %%           LogFun  = undefined | function() with arity 3
