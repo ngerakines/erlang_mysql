@@ -64,9 +64,6 @@
 
 -module(mysql_conn).
 
-%%--------------------------------------------------------------------
-%% External exports
-%%--------------------------------------------------------------------
 -compile(export_all).
 
 -include("mysql.hrl").
@@ -263,7 +260,7 @@ init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
     end.
 
 %%--------------------------------------------------------------------
-%% Function: loop(State)
+%% Function: loop(State)q
 %%           State = state record()
 %% Descrip.: Wait for signals asking us to perform a MySQL query, or
 %%           signals that the socket was closed.
@@ -486,27 +483,26 @@ atom_to_binary(Val) ->
 %%--------------------------------------------------------------------
 mysql_init(Sock, RecvPid, User, Password) ->
     case do_recv(RecvPid, undefined) of
-	{ok, Packet, InitSeqNum} ->
-	    {Version, Salt1, Salt2, Caps} = greeting(Packet),
-	    AuthRes =
-		case Caps band ?SECURE_CONNECTION of
-		    ?SECURE_CONNECTION ->
-			mysql_auth:do_new_auth(Sock, RecvPid, InitSeqNum + 1, User, Password, Salt1, Salt2);
-		    _ ->
-			mysql_auth:do_old_auth(Sock, RecvPid, InitSeqNum + 1, User, Password,Salt1)
-		end,
-	    case AuthRes of
-		{ok, <<0:8, _Rest/binary>>, _RecvNum} ->
-		    {ok,Version};
-		{ok, <<255:8, _Code:16/little, Message/binary>>, _RecvNum} ->
-		    {error, binary_to_list(Message)};
-		{ok, RecvPacket, _RecvNum} ->
-		    {error, binary_to_list(RecvPacket)};
-		{error, Reason} ->
-		    {error, Reason}
-	    end;
-	{error, Reason} ->
-	    {error, Reason}
+        {ok, Packet, InitSeqNum} ->
+            {Version, Salt1, Salt2, Caps} = greeting(Packet),
+            AuthRes = case Caps band ?SECURE_CONNECTION of
+                ?SECURE_CONNECTION ->
+                    mysql_auth:do_new_auth(Sock, RecvPid, InitSeqNum + 1, User, Password, Salt1, Salt2);
+                _ ->
+                    mysql_auth:do_old_auth(Sock, RecvPid, InitSeqNum + 1, User, Password, Salt1)
+            end,
+            case AuthRes of
+                {ok, <<0:8, _Rest/binary>>, _RecvNum} ->
+                    {ok,Version};
+                {ok, <<255:8, _Code:16/little, Message/binary>>, _RecvNum} ->
+                    {error, binary_to_list(Message)};
+                {ok, RecvPacket, _RecvNum} ->
+                    {error, binary_to_list(RecvPacket)};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 %% part of mysql_init/4
@@ -545,8 +541,6 @@ get_query_response(RecvPid, Version) ->
 	{ok, <<Fieldcount:8, Rest/binary>>, _} ->
 	    case Fieldcount of
 		0 ->
-		    %% No Tabular data
-			%io:format("++++++++ OK Packet ~p~n", [Rest]),
 			{ok, AffectedRows, Rest1} = get_length_coded_binary(Rest),
 			{ok, InsertID, Rest2} = get_length_coded_binary(Rest1),
 			<<ServerStatus:16/integer, Rest3/binary>> = Rest2,
@@ -559,7 +553,6 @@ get_query_response(RecvPid, Version) ->
 				warning_count = WarningCount,
 				message = Message
 			},
-			%io:format("+++++++++ Res ~p~n", [Res]),
 		    {updated, Res};
 		255 ->
 		    <<_Code:16/little, Message/binary>>  = Rest,
