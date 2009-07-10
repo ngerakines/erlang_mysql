@@ -70,66 +70,20 @@
 -module(mysql).
 -behaviour(gen_server).
 
-
 %% @type mysql_result() = term()
 %% @type query_result = {data, mysql_result()} | {updated, mysql_result()} |
 %%   {error, mysql_result()}
 
-
-%% External exports
--export([start_link/5,
-	 start_link/6,
-	 start_link/7,
-	 start_link/8,
-
-	 start/5,
-	 start/6,
-	 start/7,
-	 start/8,
-
-	 connect/7,
-	 connect/8,
-	 connect/9,
-
-	 fetch/1,
-	 fetch/2,
-	 fetch/3,
-	 
-	 prepare/2,
-	 execute/1,
-	 execute/2,
-	 execute/3,
-	 execute/4,
-	 unprepare/1,
-	 get_prepared/1,
-	 get_prepared/2,
-
-	 transaction/2,
-	 transaction/3,
-
-	 get_result_field_info/1,
-	 get_result_rows/1,
-	 get_result_affected_rows/1,
-	 get_result_insert_id/1,
-	 get_result_reason/1,
-
-	 encode/1,
-	 encode/2,
-	 asciz_binary/2
-	]).
-
-%% Internal exports - just for mysql_* modules
--export([log/4
-	]).
-
 %% Internal exports - gen_server callbacks
--export([init/1,
-	 handle_call/3,
-	 handle_cast/2,
-	 handle_info/2,
-	 terminate/2,
-	 code_change/3
-	]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
+-compile(export_all).
 
 %% Records
 -include("mysql.hrl").
@@ -184,89 +138,37 @@
 			     
 
 log(_Module, _Line, _Level, _FormatFun) -> ok.
-    %% {Format, Arguments} = FormatFun(),
-    %% io:format("~w:~b: "++ Format ++ "~n", [Module, Line] ++ Arguments).
 
-
-%% External functions
-
+%% @spec start_link(PoolId, Host, Port, User, Password, Database, Encoding) -> Result
+%%       PoolId = atom()
+%%       Host = string()
+%%       Port = undefined | integer()
+%%       User = string()
+%%       Password = string()
+%%       Database = string()
+%%       Encoding = atom
+%%       Result = {ok, pid()} | ignore | {error, any()}
 %% @doc Starts the MySQL client gen_server process.
-%%
-%% The Port and LogFun parameters are optional.
-%%
-%% @spec start_link(PoolId::atom(), Host::string(), Port::integer(),
-%%   Username::string(), Password::string(), Database::string(),
-%%   LogFun::undefined | function() of arity 4) ->
-%%     {ok, Pid} | ignore | {error, Err}
-start_link(PoolId, Host, User, Password, Database) ->
-    start_link(PoolId, Host, ?PORT, User, Password, Database).
-
-start_link(PoolId, Host, Port, User, Password, Database) ->
-    start_link(PoolId, Host, Port, User, Password, Database, undefined,
-	       undefined).
-
-start_link(PoolId, Host, undefined, User, Password, Database, LogFun) ->
-    start_link(PoolId, Host, ?PORT, User, Password, Database, LogFun,
-	       undefined);
-start_link(PoolId, Host, Port, User, Password, Database, LogFun) ->
-    start_link(PoolId, Host, Port, User, Password, Database, LogFun,
-	       undefined).
-
-start_link(PoolId, Host, undefined, User, Password, Database, LogFun,
-	   Encoding) ->
-    start1(PoolId, Host, ?PORT, User, Password, Database, LogFun, Encoding,
-	   start_link);
-start_link(PoolId, Host, Port, User, Password, Database, LogFun, Encoding) ->
-    start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding,
-	   start_link).
-
-%% @doc These functions are similar to their start_link counterparts,
-%% but they call gen_server:start() instead of gen_server:start_link()
-start(PoolId, Host, User, Password, Database) ->
-    start(PoolId, Host, ?PORT, User, Password, Database).
-
-start(PoolId, Host, Port, User, Password, Database) ->
-    start(PoolId, Host, Port, User, Password, Database, undefined).
-
-start(PoolId, Host, undefined, User, Password, Database, LogFun) ->
-    start(PoolId, Host, ?PORT, User, Password, Database, LogFun);
-start(PoolId, Host, Port, User, Password, Database, LogFun) ->
-    start(PoolId, Host, Port, User, Password, Database, LogFun, undefined).
-
-start(PoolId, Host, undefined, User, Password, Database, LogFun, Encoding) ->
-    start1(PoolId, Host, ?PORT, User, Password, Database, LogFun, Encoding,
-	   start);
-start(PoolId, Host, Port, User, Password, Database, LogFun, Encoding) ->
-    start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding,
-	   start).
-
-start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding, _StartFunc) ->
+start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
+    start_link(PoolId, Host, ?PORT, User, Password, Database, Encoding);
+start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
     crypto:start(),
     gen_server:start_link(
       {local, ?SERVER}, ?MODULE,
-      [PoolId, Host, Port, User, Password, Database, LogFun, Encoding], []).
+      [PoolId, Host, Port, User, Password, Database, Encoding], []).
 
-
-%% @equiv connect(PoolId, Host, Port, User, Password, Database, Encoding,
-%%	   Reconnect, true)
-connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect) ->
-    connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect, true).
-
-%% @doc Starts a MySQL connection and, if successful, add it to the
-%%   connection pool in the dispatcher.
-%%
 %% @spec: connect(PoolId::atom(), Host::string(), Port::integer() | undefined,
 %%    User::string(), Password::string(), Database::string(),
 %%    Encoding::string(), Reconnect::bool(), LinkConnection::bool()) ->
 %%      {ok, ConnPid} | {error, Reason}
-connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect, _LinkConnection) ->
-    Port1 = if Port == undefined -> ?PORT; true -> Port end,
-    Fun = fun mysql_conn:start_link/7,
-    io:format("Creating connection ~n", []),
-    case Fun(Host, Port1, User, Password, Database, Encoding, PoolId) of
+%% @doc Add an additional MySQL connection to a given pool.
+%% @spec connect(PoolId, Host, Port, User, Password, Database, Encoding) -> Result
+connect(PoolId, Host, undefined, User, Password, Database, Encoding) ->
+    connect(PoolId, Host, ?PORT, User, Password, Database, Encoding);
+connect(PoolId, Host, Port, User, Password, Database, Encoding) ->
+    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
         {ok, ConnPid} ->
-            io:format("Created connection ~p~n", [ConnPid]),
-            Conn = new_conn(PoolId, ConnPid, Reconnect, Host, Port1, User, Password, Database, Encoding),
+            Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
             case gen_server:call(?SERVER, {add_conn, Conn}) of
                 ok -> {ok, ConnPid};
                 Res -> Res
@@ -296,15 +198,14 @@ new_conn(PoolId, ConnPid, Reconnect, Host, Port, User, Password, Database, Encod
             }
     end.
 
-%% @doc Fetch a query inside a transaction.
-%%
 %% @spec fetch(Query::iolist()) -> query_result()
+%% @doc Fetch a query inside a transaction.
 fetch(Query) ->
     case get(?STATE_VAR) of
-	undefined ->
-	    {error, not_in_transaction};
-	State ->
-	    mysql_conn:fetch_local(State, Query)
+        undefined ->
+            {error, not_in_transaction};
+        State ->
+            mysql_conn:fetch_local(State, Query)
     end.
 
 %% @doc Send a query to a connection from the connection pool and wait
@@ -317,12 +218,7 @@ fetch(PoolId, Query) ->
     fetch(PoolId, Query, undefined).
 
 fetch(PoolId, Query, Timeout) -> 
-    case get(?STATE_VAR) of
-	undefined ->
-	    call_server({fetch, PoolId, Query}, Timeout);
-	State ->
-	    mysql_conn:fetch_local(State, Query)
-    end.
+    call_server({fetch, PoolId, Query}, Timeout).
 
 
 %% @doc Register a prepared statement with the dispatcher. This call does not
@@ -336,15 +232,6 @@ fetch(PoolId, Query, Timeout) ->
 %% @spec prepare(Name::atom(), Query::iolist()) -> ok
 prepare(Name, Query) ->
     gen_server:cast(?SERVER, {prepare, Name, Query}).
-
-%% @doc Unregister a statement that has previously been register with
-%%   the dispatcher. All calls to execute() with the given statement
-%%   will fail once the statement is unprepared. If the statement hasn't
-%%   been prepared, nothing happens.
-%%
-%% @spec unprepare(Name::atom()) -> ok
-unprepare(Name) ->
-    gen_server:cast(?SERVER, {unprepare, Name}).
 
 %% @doc Get the prepared statement with the given name.
 %%
@@ -362,27 +249,7 @@ unprepare(Name) ->
 get_prepared(Name) ->
     get_prepared(Name, undefined).
 get_prepared(Name, Version) ->
-    io:format("get_prepared/2 ~p ~p~n", [Name, Version]),
-    io:format("Reaching out to ~p~n", [?SERVER]),
-    io:format("whereis ~p~n", [whereis(?SERVER)]),
-    XX = gen_server:call(?SERVER, {get_prepared, Name, Version}),
-    io:format("XX ~p~n", [XX]),
-    XX.
-
-
-%% @doc Execute a query inside a transaction.
-%%
-%% @spec execute(Name::atom, Params::[term()]) -> mysql_result()
-execute(Name) ->
-    execute(Name, []).
-
-execute(Name, Params) when is_atom(Name), is_list(Params) ->
-    case get(?STATE_VAR) of
-        undefined ->
-            {error, not_in_transaction};
-        State ->
-            mysql_conn:execute_local(State, Name, Params)
-    end;
+    gen_server:call(?SERVER, {get_prepared, Name, Version}).
 
 %% @doc Execute a query in the connection pool identified by
 %% PoolId. This function optionally accepts a list of parameters to pass
@@ -402,18 +269,7 @@ execute(PoolId, Name, Params) when is_list(Params) ->
     execute(PoolId, Name, Params, undefined).
 
 execute(PoolId, Name, Params, Timeout) ->
-    case get(?STATE_VAR) of
-	undefined ->
-	    call_server({execute, PoolId, Name, Params}, Timeout);
-	State ->
-	      case mysql_conn:execute_local(State, Name, Params) of
-		  {ok, Res, NewState} ->
-		      put(?STATE_VAR, NewState),
-		      Res;
-		  Err ->
-		      Err
-	      end
-    end.
+    call_server({execute, PoolId, Name, Params}, Timeout).
 
 %% @doc Execute a transaction in a connection belonging to the connection pool.
 %% Fun is a function containing a sequence of calls to fetch() and/or
@@ -434,80 +290,59 @@ transaction(PoolId, Fun) ->
     transaction(PoolId, Fun, undefined).
 
 transaction(PoolId, Fun, Timeout) ->
-    case get(?STATE_VAR) of
-	undefined ->
-	    call_server({transaction, PoolId, Fun}, Timeout);
-	State ->
-	    case mysql_conn:get_pool_id(State) of
-		PoolId ->
-		    case catch Fun() of
-			error = Err -> throw(Err);
-			{error, _} = Err -> throw(Err);
-			{'EXIT', _} = Err -> throw(Err);
-			Other -> {atomic, Other}
-		    end;
-		_Other ->
-		    call_server({transaction, PoolId, Fun}, Timeout)
-	    end
-    end.
+    call_server({transaction, PoolId, Fun}, Timeout).
 
 %% @doc Extract the FieldInfo from MySQL Result on data received.
 %%
 %% @spec get_result_field_info(MySQLRes::mysql_result()) ->
 %%   [{Table, Field, Length, Name}]
-get_result_field_info(#mysql_result{fieldinfo = FieldInfo}) ->
-    FieldInfo.
+get_result_field_info(#mysql_result{fieldinfo = FieldInfo}) -> FieldInfo.
 
 %% @doc Extract the Rows from MySQL Result on data received
 %% 
 %% @spec get_result_rows(MySQLRes::mysql_result()) -> [Row::list()]
-get_result_rows(#mysql_result{rows=AllRows}) ->
-    AllRows.
+get_result_rows(#mysql_result{rows=AllRows}) -> AllRows.
 
 %% @doc Extract the Rows from MySQL Result on update
 %%
 %% @spec get_result_affected_rows(MySQLRes::mysql_result()) ->
 %%           AffectedRows::integer()
-get_result_affected_rows(#mysql_result{affectedrows=AffectedRows}) ->
-    AffectedRows.
+get_result_affected_rows(#mysql_result{affectedrows=AffectedRows}) -> AffectedRows.
 
 %% @doc Extract the insert id from MySQL Result on insert
 %%
 %% @spec get_result_insert_id(MySQLRes::mysql_result()) ->
 %%           InsertID::integer()
-get_result_insert_id(#mysql_result{insert_id=InsertID}) ->
-	InsertID.
+get_result_insert_id(#mysql_result{insert_id=InsertID}) -> InsertID.
 
 %% @doc Extract the error Reason from MySQL Result on error
 %%
 %% @spec get_result_reason(MySQLRes::mysql_result()) ->
 %%    Reason::string()
-get_result_reason(#mysql_result{error=Reason}) ->
-    Reason.
+get_result_reason(#mysql_result{error=Reason}) -> Reason.
 
-connect(PoolId, Host, undefined, User, Password, Database, Reconnect) ->
-    connect(PoolId, Host, ?PORT, User, Password, Database, undefined,
-	    Reconnect).
-
-%% gen_server callbacks
-
-init([PoolId, Host, Port, User, Password, Database, LogFun, Encoding]) ->
-    LogFun1 = if LogFun == undefined -> fun log/4; true -> LogFun end,
+init([PoolId, Host, Port, User, Password, Database, Encoding]) ->
+    LogFun = fun log/4,
     case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
         {ok, ConnPid} ->
             Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
-            io:format("Created conn ~p~n", [Conn]),
-            State = #state{log_fun = LogFun1},
+            State = #state{log_fun = LogFun},
             {ok, add_conn(Conn, State)};
         {error, Reason} ->
             {stop, {error, Reason}}
     end.
 
 handle_call({fetch, PoolId, Query}, From, State) ->
-    fetch_queries(PoolId, From, State, [Query]);
+    with_next_conn(
+        PoolId, State,
+        fun(Conn, State1) ->
+            Pid = Conn#conn.pid,
+            Results = mysql_conn:fetch(Pid, [Query], From),
+            {reply, Results, State1}
+        end
+    );
 
 handle_call({get_prepared, Name, Version}, _From, State) ->
-    io:format("handle_call/3 ~p~n", [{get_prepared, Name, Version}]),
     case gb_trees:lookup(Name, State#state.prepares) of
         none ->
             {reply, {error, {undefined, Name}}, State};
@@ -525,7 +360,6 @@ handle_call({execute, PoolId, Name, Params}, From, State) ->
                 none ->
                     {reply, {error, {no_such_statement, Name}}, State1};
                 {value, {Stmt, Version}} ->
-                    io:format("About to execute ~p~n", [Stmt]),
                     Response = mysql_conn:execute_with(Conn#conn.pid, Name, Version, Params, From, Stmt),
                     {reply, Response, State1}
             end
@@ -536,231 +370,144 @@ handle_call({transaction, PoolId, Fun}, From, State) ->
     with_next_conn(
       PoolId, State,
       fun(Conn, State1) ->
-          mysql_conn:transaction(Conn#conn.pid, Fun, From),
-          {noreply, State1}
+          Result = mysql_conn:transaction(Conn#conn.pid, Fun, From),
+          {reply, Result, State1}
       end);
 
 handle_call({add_conn, Conn}, _From, State) ->
     NewState = add_conn(Conn, State),
-    {PoolId, ConnPid} = {Conn#conn.pool_id, Conn#conn.pid},
-    LogFun = State#state.log_fun,
-    ?Log2(LogFun, normal,
-	  "added connection with id '~p' (pid ~p) to my list",
-	  [PoolId, ConnPid]),
-    {reply, ok, NewState};
-
-handle_call(get_logfun, _From, State) ->
-    {reply, {ok, State#state.log_fun}, State}.
+    {reply, ok, NewState}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
-    io:format("handle_cast/2 ~p~n", [{prepare, Name, Stmt}]),
     Version1 = case gb_trees:lookup(Name, State#state.prepares) of
         {value, {_Stmt, Version}} -> Version + 1;
         none -> 1
     end,
-    {noreply, State#state{prepares = gb_trees:enter(Name, {Stmt, Version1}, State#state.prepares)}};
-
-handle_cast({unprepare, Name}, State) ->
-    LogFun = State#state.log_fun,
-    ?Log2(LogFun, debug, "received unprepare/1: ~p", [Name]),
-    State1 =
-	case gb_trees:lookup(Name, State#state.prepares) of
-	    none ->
-		?Log2(LogFun, warn, "trying to unprepare a non-existing "
-		      "statement: ~p", [Name]),
-		State;
-	    {value, _Stmt} ->
-		State#state{prepares =
-			    gb_trees:delete(Name, State#state.prepares)}
-	end,
-    {noreply, State1}.
+    {noreply, State#state{prepares = gb_trees:enter(Name, {Stmt, Version1}, State#state.prepares)}}.
 
 %% Called when a connection to the database has been lost. If
 %% The 'reconnect' flag was set to true for the connection, we attempt
 %% to establish a new connection to the database.
-handle_info({'DOWN', _MonitorRef, process, Pid, Info}, State) ->
-    LogFun = State#state.log_fun,
+handle_info({'DOWN', _MonitorRef, process, Pid, _Info}, State) ->
     case remove_conn(Pid, State) of
-	{ok, Conn, NewState} ->
-	    LogLevel = case Info of
-			   normal -> normal;
-			   _ -> error
-		       end,
-	    ?Log2(LogFun, LogLevel,
-		"connection pid ~p exited : ~p", [Pid, Info]),
-	    case Conn#conn.reconnect of
-		true ->
-		    start_reconnect(Conn, LogFun);
-		false ->
-		    ok
-	    end,
-	    {noreply, NewState};
-	error ->
-	    ?Log2(LogFun, error,
-		  "received 'DOWN' signal from pid ~p not in my list", [Pid]),
-	    {noreply, State}
+        {ok, Conn, NewState} ->
+            case Conn#conn.reconnect of
+                true -> start_reconnect(Conn);
+                false -> ok
+            end,
+            {noreply, NewState};
+        error ->
+            {noreply, State}
     end.
     
-terminate(Reason, State) ->
-    LogFun = State#state.log_fun,
-    LogLevel = case Reason of
-		   normal -> debug;
-		   _ -> error
-	       end,
-    ?Log2(LogFun, LogLevel, "terminating with reason: ~p", [Reason]),
-    Reason.
+terminate(Reason, _State) -> Reason.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
+code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 %% Internal functions
 
-fetch_queries(PoolId, From, State, QueryList) ->
-    with_next_conn(
-        PoolId, State,
-        fun(Conn, State1) ->
-            Pid = Conn#conn.pid,
-            mysql_conn:fetch(Pid, QueryList, From),
-            {noreply, State1}
-        end).
-
 with_next_conn(PoolId, State, Fun) ->
     case get_next_conn(PoolId, State) of
-	{ok, Conn, NewState} ->    
-	    Fun(Conn, NewState);
-	error ->
-	    %% we have no active connection matching PoolId
-	    {reply, {error, {no_connection_in_pool, PoolId}}, State}
+        {ok, Conn, NewState} ->    
+            Fun(Conn, NewState);
+        error ->
+            {reply, {error, {no_connection_in_pool, PoolId}}, State}
     end.
 
+call_server(Msg, Timeout) when Timeout == undefined ->
+    gen_server:call(?SERVER, Msg);
 call_server(Msg, Timeout) ->
-    if Timeout == undefined ->
-	    gen_server:call(?SERVER, Msg);
-       true ->
-	    gen_server:call(?SERVER, Msg, Timeout)
-    end.
+    gen_server:call(?SERVER, Msg, Timeout).
 
 add_conn(Conn, State) ->
     Pid = Conn#conn.pid,
     erlang:monitor(process, Conn#conn.pid),
     PoolId = Conn#conn.pool_id,
     ConnPools = State#state.conn_pools,
-    NewPool = 
-	case gb_trees:lookup(PoolId, ConnPools) of
-	    none ->
-		{[Conn],[]};
-	    {value, {Unused, Used}} ->
-		{[Conn | Unused], Used}
-	end,
-    State#state{conn_pools =
-		gb_trees:enter(PoolId, NewPool,
-			       ConnPools),
-		pids_pools = gb_trees:enter(Pid, PoolId,
-					    State#state.pids_pools)}.
+    NewPool =  case gb_trees:lookup(PoolId, ConnPools) of
+        none -> {[Conn],[]};
+        {value, {Unused, Used}} -> {[Conn | Unused], Used}
+    end,
+    State#state{
+        conn_pools = gb_trees:enter(PoolId, NewPool, ConnPools),
+        pids_pools = gb_trees:enter(Pid, PoolId, State#state.pids_pools)
+    }.
 
 remove_pid_from_list(Pid, Conns) ->
     lists:foldl(
-      fun(OtherConn, {NewConns, undefined}) ->
-	      if OtherConn#conn.pid == Pid ->
-		      {NewConns, OtherConn};
-		 true ->
-		      {[OtherConn | NewConns], undefined}
-	      end;
-	 (OtherConn, {NewConns, FoundConn}) ->
-	      {[OtherConn|NewConns], FoundConn}
-      end, {[],undefined}, lists:reverse(Conns)).
+        fun (OtherConn, {NewConns, undefined}) ->
+            if
+                OtherConn#conn.pid == Pid -> {NewConns, OtherConn};
+                true -> {[OtherConn | NewConns], undefined}
+            end;
+            (OtherConn, {NewConns, FoundConn}) ->
+                {[OtherConn|NewConns], FoundConn}
+        end,
+        {[],undefined}, lists:reverse(Conns)
+    ).
 
 remove_pid_from_lists(Pid, Conns1, Conns2) ->
     case remove_pid_from_list(Pid, Conns1) of
-	{NewConns1, undefined} ->
-	    {NewConns2, Conn} = remove_pid_from_list(Pid, Conns2),
-	    {Conn, {NewConns1, NewConns2}};
-	{NewConns1, Conn} ->
-	    {Conn, {NewConns1, Conns2}}
+        {NewConns1, undefined} ->
+            {NewConns2, Conn} = remove_pid_from_list(Pid, Conns2),
+            {Conn, {NewConns1, NewConns2}};
+        {NewConns1, Conn} ->
+            {Conn, {NewConns1, Conns2}}
     end.
     
 remove_conn(Pid, State) ->
     PidsPools = State#state.pids_pools,
     case gb_trees:lookup(Pid, PidsPools) of
-	none ->
-	    error;
-	{value, PoolId} ->
-	    ConnPools = State#state.conn_pools,
-	    case gb_trees:lookup(PoolId, ConnPools) of
-		none ->
-		    error;
-		{value, {Unused, Used}} ->
-		    {Conn, NewPool} = remove_pid_from_lists(Pid, Unused, Used),
-		    NewConnPools = gb_trees:enter(PoolId, NewPool, ConnPools),
-		    {ok, Conn, State#state{conn_pools = NewConnPools,
-				     pids_pools =
-				     gb_trees:delete(Pid, PidsPools)}}
-	    end
+        none ->
+            error;
+        {value, PoolId} ->
+            ConnPools = State#state.conn_pools,
+            case gb_trees:lookup(PoolId, ConnPools) of
+            none ->
+                error;
+            {value, {Unused, Used}} ->
+                {Conn, NewPool} = remove_pid_from_lists(Pid, Unused, Used),
+                NewConnPools = gb_trees:enter(PoolId, NewPool, ConnPools),
+                {ok, Conn, State#state{
+                    conn_pools = NewConnPools,
+                    pids_pools = gb_trees:delete(Pid, PidsPools)
+                }}
+            end
     end.
 
 get_next_conn(PoolId, State) ->
     ConnPools = State#state.conn_pools,
     case gb_trees:lookup(PoolId, ConnPools) of
-	none ->
-	    error;
-	{value, {[],[]}} ->
-	    error;
-	%% We maintain 2 lists: one for unused connections and one for used
-	%% connections. When we run out of unused connections, we recycle
-	%% the list of used connections.
-	{value, {[], Used}} ->
-	    [Conn | Conns] = lists:reverse(Used),
-	    {ok, Conn,
-	     State#state{conn_pools =
-			 gb_trees:enter(PoolId, {Conns, [Conn]}, ConnPools)}};
-	{value, {[Conn|Unused], Used}} ->
-	    {ok, Conn, State#state{
-			 conn_pools =
-			 gb_trees:enter(PoolId, {Unused, [Conn|Used]},
-					ConnPools)}}
+        none ->
+            error;
+        {value, {[],[]}} ->
+            error;
+        {value, {[], Used}} ->
+            [Conn | Conns] = lists:reverse(Used),
+            {ok, Conn, State#state{
+                conn_pools = gb_trees:enter(PoolId, {Conns, [Conn]}, ConnPools)
+            }};
+        {value, {[Conn|Unused], Used}} ->
+            {ok, Conn, State#state{
+                conn_pools = gb_trees:enter(PoolId, {Unused, [Conn|Used]}, ConnPools)
+            }}
     end.
 
-start_reconnect(Conn, LogFun) ->
-    Pid = spawn_link(fun () ->
-			reconnect_loop(Conn#conn{pid = undefined}, LogFun, 0)
-		end),
-    {PoolId, Host, Port} = {Conn#conn.pool_id, Conn#conn.host, Conn#conn.port},
-    ?Log2(LogFun, debug,
-	"started pid ~p to try and reconnect to ~p:~s:~p (replacing "
-	"connection with pid ~p)",
-	[Pid, PoolId, Host, Port, Conn#conn.pid]),
+%% @todo This should probably be monitored somehow.
+start_reconnect(Conn) ->
+    spawn_link(fun () ->
+        reconnect_loop(Conn#conn{ pid = undefined }, 0)
+    end),
     ok.
 
-reconnect_loop(Conn, LogFun, N) ->
+reconnect_loop(Conn, N) ->
     {PoolId, Host, Port} = {Conn#conn.pool_id, Conn#conn.host, Conn#conn.port},
-    case connect(PoolId,
-		 Host,
-		 Port,
-		 Conn#conn.user,
-		 Conn#conn.password,
-		 Conn#conn.database,
-		 Conn#conn.encoding,
-		 Conn#conn.reconnect) of
-	{ok, ConnPid} ->
-	    ?Log2(LogFun, debug,
-		"managed to reconnect to ~p:~s:~p "
-		"(connection pid ~p)", [PoolId, Host, Port, ConnPid]),
-	    ok;
-	{error, Reason} ->
-	    %% log every once in a while
-	    NewN = case N of
-		       10 ->
-			   ?Log2(LogFun, debug,
-			       "reconnect: still unable to connect to "
-			       "~p:~s:~p (~p)", [PoolId, Host, Port, Reason]),
-			   0;
-		       _ ->
-			   N + 1
-		   end,
-	    %% sleep between every unsuccessful attempt
-	    timer:sleep(5 * 1000),
-	    reconnect_loop(Conn, LogFun, NewN)
+    case connect(PoolId, Host, Port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding) of
+        {ok, _ConnPid} ->
+            ok;
+        {error, _Reason} ->
+            timer:sleep(5 * 1000),
+            reconnect_loop(Conn, N + 1)
     end.
 
 
@@ -809,8 +556,8 @@ two_digits(Nums) when is_list(Nums) ->
 two_digits(Num) ->
     [Str] = io_lib:format("~b", [Num]),
     case length(Str) of
-	1 -> [$0 | Str];
-	_ -> Str
+        1 -> [$0 | Str];
+        _ -> Str
     end.
 
 %%  Quote a string or binary value so that it can be included safely in a

@@ -48,10 +48,8 @@ start_link(Host, Port, Parent) when is_list(Host), is_integer(Port) ->
 
 %% @private
 init(Host, Port, Parent) ->
-    io:format("Init to ~p~n", [{Host, Port, Parent}]),
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
-            io:format("Socket OK ~p~n", [{ok, self(), Sock}]),
             proc_lib:init_ack(Parent, {ok, self(), Sock}),
             State = #state{
                 socket  = Sock,
@@ -61,7 +59,6 @@ init(Host, Port, Parent) ->
             loop(State);
         E ->
             Msg = lists:flatten(io_lib:format("connect failed : ~p", [E])),
-            io:format("Msg"),
             proc_lib:init_ack(Parent, {error, Msg})
     end.
 

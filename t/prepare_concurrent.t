@@ -5,13 +5,15 @@
 main(_) ->
     etap:plan(unknown),
     {Host, User, Pass, Name} = {"localhost", "test", "test", "testdatabase"},
-    {ok, Pid} = mysql:start_link(test1, "localhost", 3306, User, Pass, Name, undefined, 'utf8'),
+    {ok, Pid} = mysql:start_link(test1, Host, 3306, User, Pass, Name, 'utf8'),
+    {ok, Pid2} = mysql:connect(test, Host, 3306, User, Pass, Name, 'utf8'),
+    {ok, Pid3} = mysql:connect(test, Host, 3306, User, Pass, Name, 'utf8'),
 
-    mysql:prepare(create_foo, <<"CREATE TABLE foo (id int(11));">>),
-    mysql:prepare(insert_foo, <<"INSERT INTO foo SET id = ?">>),
-    mysql:prepare(delete_foo, <<"DELETE FROM foo WHERE id = ?">>),
-    mysql:prepare(select_foo, <<"SELECT * FROM foo WHERE id = ?">>),
-    mysql:prepare(drop_foo, <<"DROP TABLE foo">>),
+    mysql:prepare(create_foo, <<"CREATE TABLE bar (id int(11));">>),
+    mysql:prepare(insert_foo, <<"INSERT INTO bar SET id = ?">>),
+    mysql:prepare(delete_foo, <<"DELETE FROM bar WHERE id = ?">>),
+    mysql:prepare(select_foo, <<"SELECT * FROM bar WHERE id = ?">>),
+    mysql:prepare(drop_foo, <<"DROP TABLE bar">>),
 
     (fun() ->
         {updated, MySQLRes} = mysql:execute(test1, create_foo, [], 8000),

@@ -154,23 +154,6 @@ transaction(Pid, Fun, From, Timeout) ->
 get_pool_id(State) ->
     State#state.pool_id.
 
-%%====================================================================
-%% Internal functions
-%%====================================================================
-
-fetch_local(State, Query) ->
-    do_query(State, Query).
-
-execute_local(State, Name, Params) ->
-    io:format("execute_local/3 ~p ~p ~p~n", [State, Name, Params]),
-    case do_execute(State, Name, Params, undefined) of
-        {ok, Res, State1} ->
-            put(?STATE_VAR, State1),
-            Res;
-        Err ->
-            Err
-    end.
-
 %%--------------------------------------------------------------------
 %% Function: do_recv(RecvPid, SeqNum)
 %%           RecvPid = pid(), mysql_recv process
@@ -201,12 +184,10 @@ do_recv(RecvPid, SeqNum) when is_integer(SeqNum) ->
     end.
 
 do_fetch(Pid, Queries, From, Timeout) ->
-    send_msg(Pid, {fetch, Queries, From}, From, Timeout).
+    send_msg(Pid, {fetch, Queries}, From, Timeout).
 
 send_msg(Pid, Msg, _From, _Timeout) ->
-    io:format("Sending to '~p': ~p~n", [Pid, Msg]),
     {ok, Response} = gen:call(Pid, '$mysql_conn_loop', Msg),
-    io:format("Received from '~p': ~p~n", [Pid, Response]),
     case Response of
         {fetch_result, _Pid, Result} -> Result;
         Other -> Other
@@ -281,7 +262,6 @@ loop(State) ->
             gen:reply({From, Mref}, Res),
             get(?STATE_VAR);
         {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt}} ->
-            io:format("'~p' Received ~p~n", [self(), {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt}}]),
             case do_execute(State, Name, Params, Version, Stmt) of
                 {error, _} = Err ->
                     gen:reply({From, Mref}, Err),
@@ -291,7 +271,6 @@ loop(State) ->
                     OutState
             end;
         {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1}} ->
-            io:format("'~p' Received ~p~n", [self(), {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1}}]),
             case do_execute(State, Name, Params, Version) of
                 {error, _} = Err ->
                     gen:reply({From, Mref}, Err),
@@ -301,16 +280,13 @@ loop(State) ->
                     OutState
             end;
         {'$mysql_conn_loop', {_From, _Mref}, {mysql_recv, RecvPid, data, Packet, Num}} ->
-            io:format("unexpected receive ~p~n", [{mysql_recv, RecvPid, data, Packet, Num}]),
             error_logger:error_report([?MODULE, ?LINE, unexpected_packet, {num, Num}, {packet, Packet}]),
             State;
         {'$mysql_conn_loop', {_From, _Mref}, Unknown} ->
-            io:format("Unknown (strict) message ~p~n", [Unknown]),
             error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
             %% exit(unhandled_message);
             State;
         Unknown ->
-            io:format("Unknown (loose) message ~p~n", [Unknown]),
             error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
             State
             %% exit(unhandled_message)
@@ -387,14 +363,13 @@ rollback(State, Err) ->
     Res = do_query(State, <<"ROLLBACK">>),
     {aborted, {Err, {rollback_result, Res}}}.
 
+%% @todo FIX ME!
 do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
-    io:format("do_execute/5 ~p ~p ~p ~p ~p~n", [State, Name, Params, ExpectedVersion, Stmt]),
     Res = case gb_trees:lookup(Name, State#state.prepares) of
         {value, Version} when Version == ExpectedVersion -> {ok, latest};
         {value, Version} -> {ok, {Stmt, Version}};
         none -> {ok, {Stmt, 1}}
     end,
-    io:format("Looking up prepared statement: ~p~n", [Res]),
     case Res of
         {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
         {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
@@ -402,13 +377,11 @@ do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
     end.
 
 do_execute(State, Name, Params, ExpectedVersion) ->
-    io:format("do_execute/4 ~p ~p ~p ~p~n", [State, Name, Params, ExpectedVersion]),
     Res = case gb_trees:lookup(Name, State#state.prepares) of
         {value, Version} when Version == ExpectedVersion -> {ok, latest};
         {value, Version} -> mysql:get_prepared(Name, Version);
         none -> mysql:get_prepared(Name)
     end,
-    io:format("Looking up prepared statement: ~p~n", [Res]),
     case Res of
         {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
         {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
