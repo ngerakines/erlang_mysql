@@ -1,5 +1,5 @@
 LIBDIR=`erl -eval 'io:format("~s~n", [code:lib_dir()])' -s init stop -noshell`
-VERSION=2
+VERSION=3
 
 all:
 	mkdir -p ebin
@@ -17,3 +17,5 @@ install:
 	mkdir -p $(prefix)/$(LIBDIR)/erlang_mysql-$(VERSION)/{ebin,include}
 	for i in ebin/*.beam include/*.hrl; do install $$i $(prefix)/$(LIBDIR)/erlang_mysql-$(VERSION)/$$i ; done
 
+test: all
+	prove t/*.t

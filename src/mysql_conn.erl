@@ -86,6 +86,8 @@
 	 get_pool_id/1
 	]).
 
+-compile(export_all).
+
 %%--------------------------------------------------------------------
 %% External exports (should only be used by the 'mysql_auth' module)
 %%--------------------------------------------------------------------
@@ -144,35 +146,10 @@
 %%           Reason = string()
 %%--------------------------------------------------------------------
 start(Host, Port, User, Password, Database, LogFun, Encoding, PoolId) ->
-    ConnPid = self(),
-    Pid = spawn(fun () ->
-			init(Host, Port, User, Password, Database,
-			     LogFun, Encoding, PoolId, ConnPid)
-		end),
-    post_start(Pid, LogFun).
+    start_link(Host, Port, User, Password, Database, LogFun, Encoding, PoolId).
 
 start_link(Host, Port, User, Password, Database, LogFun, Encoding, PoolId) ->
-    ConnPid = self(),
-    Pid = spawn_link(fun () ->
-			     init(Host, Port, User, Password, Database,
-				  LogFun, Encoding, PoolId, ConnPid)
-		     end),
-    post_start(Pid, LogFun).
-
-%% part of start/6 or start_link/6:
-post_start(Pid, LogFun) ->
-    receive
-	{mysql_conn, Pid, ok} ->
-	    {ok, Pid};
-	{mysql_conn, Pid, {error, Reason}} ->
-	    {error, Reason};
-	Unknown ->
-	    ?Log2(LogFun, error,
-		 "received unknown signal, exiting: ~p", [Unknown]),
-	    {error, "unknown signal received"}
-    after 5000 ->
-	    {error, "timed out"}
-    end.
+   proc_lib:start_link(?MODULE, init, [Host, Port, User, Password, Database,LogFun, Encoding, PoolId, self()]).
 
 %%--------------------------------------------------------------------
 %% Function: fetch(Pid, Query, From)
@@ -324,12 +301,11 @@ init(Host, Port, User, Password, Database, LogFun, Encoding, PoolId, Parent) ->
 				 "~p : ~p",
 				 [Database,
 				  mysql:get_result_reason(MySQLRes)]),
-			    Parent ! {mysql_conn, self(),
-				      {error, failed_changing_database}};
+				proc_lib:init_ack(Parent, {error, failed_changing_database});
 
 			%% ResultType: data | updated
 			{_ResultType, _MySQLRes} ->
-			    Parent ! {mysql_conn, self(), ok},
+			    proc_lib:init_ack(Parent, {ok, self()}),
 			    case Encoding of
 				undefined -> undefined;
 				_ ->
@@ -348,13 +324,13 @@ init(Host, Port, User, Password, Database, LogFun, Encoding, PoolId, Parent) ->
 			    loop(State)
 		    end;
 		{error, _Reason} ->
-		    Parent ! {mysql_conn, self(), {error, login_failed}}
+		    proc_lib:init_ack(Parent, {error, login_failed})
 	    end;
 	E ->
 	    ?Log2(LogFun, error,
 		 "failed connecting to ~p:~p : ~p",
 		 [Host, Port, E]),
-	    Parent ! {mysql_conn, self(), {error, connect_failed}}
+	    proc_lib:init_ack(Parent, {error, connect_failed})
     end.
 
 %%--------------------------------------------------------------------
