@@ -240,10 +240,9 @@ start(PoolId, Host, Port, User, Password, Database, LogFun, Encoding) ->
     start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding,
 	   start).
 
-start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding,
-       StartFunc) ->
+start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding, _StartFunc) ->
     crypto:start(),
-    gen_server:StartFunc(
+    gen_server:start_link(
       {local, ?SERVER}, ?MODULE,
       [PoolId, Host, Port, User, Password, Database, LogFun, Encoding], []).
 
@@ -251,8 +250,7 @@ start1(PoolId, Host, Port, User, Password, Database, LogFun, Encoding,
 %% @equiv connect(PoolId, Host, Port, User, Password, Database, Encoding,
 %%	   Reconnect, true)
 connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect) ->
-    connect(PoolId, Host, Port, User, Password, Database, Encoding,
-	    Reconnect, true).
+    connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect, true).
 
 %% @doc Starts a MySQL connection and, if successful, add it to the
 %%   connection pool in the dispatcher.
@@ -261,50 +259,42 @@ connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect) ->
 %%    User::string(), Password::string(), Database::string(),
 %%    Encoding::string(), Reconnect::bool(), LinkConnection::bool()) ->
 %%      {ok, ConnPid} | {error, Reason}
-connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect,
-       LinkConnection) ->
+connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect, _LinkConnection) ->
     Port1 = if Port == undefined -> ?PORT; true -> Port end,
-    Fun = if LinkConnection ->
-		  fun mysql_conn:start_link/8;
-	     true ->
-		  fun mysql_conn:start/8
-	  end,
-
-   {ok, LogFun} = gen_server:call(?SERVER, get_logfun),
-    case Fun(Host, Port1, User, Password, Database, LogFun,
-	     Encoding, PoolId) of
-	{ok, ConnPid} ->
-	    Conn = new_conn(PoolId, ConnPid, Reconnect, Host, Port1, User,
-			    Password, Database, Encoding),
-	    case gen_server:call(
-		   ?SERVER, {add_conn, Conn}) of
-		ok ->
-		    {ok, ConnPid};
-		Res ->
-		    Res
-	    end;
-	Err->
-	    Err
+    Fun = fun mysql_conn:start_link/8,
+    {ok, LogFun} = gen_server:call(?SERVER, get_logfun),
+    io:format("Creating connection ~n", []),
+    case Fun(Host, Port1, User, Password, Database, LogFun, Encoding, PoolId) of
+        {ok, ConnPid} ->
+            io:format("Created connection ~p~n", [ConnPid]),
+            Conn = new_conn(PoolId, ConnPid, Reconnect, Host, Port1, User, Password, Database, Encoding),
+            case gen_server:call(?SERVER, {add_conn, Conn}) of
+                ok -> {ok, ConnPid};
+                Res -> Res
+            end;
+        Err-> Err
     end.
 
-new_conn(PoolId, ConnPid, Reconnect, Host, Port, User, Password, Database,
-	 Encoding) ->
+new_conn(PoolId, ConnPid, Reconnect, Host, Port, User, Password, Database, Encoding) ->
     case Reconnect of
-	true ->
-	    #conn{pool_id = PoolId,
-		  pid = ConnPid,
-		  reconnect = true,
-		  host = Host,
-		  port = Port,
-		  user = User,
-		  password = Password,
-		  database = Database,
-		  encoding = Encoding
-		 };
-	false ->                        
-	    #conn{pool_id = PoolId,
-		  pid = ConnPid,
-		  reconnect = false}
+        true ->
+            #conn{
+                pool_id = PoolId,
+                pid = ConnPid,
+                reconnect = true,
+                host = Host,
+                port = Port,
+                user = User,
+                password = Password,
+                database = Database,
+                encoding = Encoding
+            };
+        false ->                        
+            #conn{
+                pool_id = PoolId,
+                pid = ConnPid,
+                reconnect = false
+            }
     end.
 
 %% @doc Fetch a query inside a transaction.
@@ -373,7 +363,12 @@ unprepare(Name) ->
 get_prepared(Name) ->
     get_prepared(Name, undefined).
 get_prepared(Name, Version) ->
-    gen_server:call(?SERVER, {get_prepared, Name, Version}).
+    io:format("get_prepared/2 ~p ~p~n", [Name, Version]),
+    io:format("Reaching out to ~p~n", [?SERVER]),
+    io:format("whereis ~p~n", [whereis(?SERVER)]),
+    XX = gen_server:call(?SERVER, {get_prepared, Name, Version}),
+    io:format("XX ~p~n", [XX]),
+    XX.
 
 
 %% @doc Execute a query inside a transaction.
@@ -384,10 +379,10 @@ execute(Name) ->
 
 execute(Name, Params) when is_atom(Name), is_list(Params) ->
     case get(?STATE_VAR) of
-	undefined ->
-	    {error, not_in_transaction};
-	State ->
-	    mysql_conn:execute_local(State, Name, Params)
+        undefined ->
+            {error, not_in_transaction};
+        State ->
+            mysql_conn:execute_local(State, Name, Params)
     end;
 
 %% @doc Execute a query in the connection pool identified by
@@ -499,46 +494,45 @@ connect(PoolId, Host, undefined, User, Password, Database, Reconnect) ->
 
 init([PoolId, Host, Port, User, Password, Database, LogFun, Encoding]) ->
     LogFun1 = if LogFun == undefined -> fun log/4; true -> LogFun end,
-    case mysql_conn:start(Host, Port, User, Password, Database, LogFun1,
-			  Encoding, PoolId) of
-	{ok, ConnPid} ->
-	    Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password,
-			    Database, Encoding),
-	    State = #state{log_fun = LogFun1},
-	    {ok, add_conn(Conn, State)};
-	{error, Reason} ->
-	    ?Log(LogFun1, error,
-		 "failed starting first MySQL connection handler, "
-		 "exiting"),
-	    {stop, {error, Reason}}
+    case mysql_conn:start_link(Host, Port, User, Password, Database, LogFun1, Encoding, PoolId) of
+        {ok, ConnPid} ->
+            Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
+            io:format("Created conn ~p~n", [Conn]),
+            State = #state{log_fun = LogFun1},
+            {ok, add_conn(Conn, State)};
+        {error, Reason} ->
+            {stop, {error, Reason}}
     end.
 
 handle_call({fetch, PoolId, Query}, From, State) ->
     fetch_queries(PoolId, From, State, [Query]);
 
 handle_call({get_prepared, Name, Version}, _From, State) ->
+    io:format("handle_call/3 ~p~n", [{get_prepared, Name, Version}]),
     case gb_trees:lookup(Name, State#state.prepares) of
-	none ->
-	    {reply, {error, {undefined, Name}}, State};
-	{value, {_StmtBin, Version1}} when Version1 == Version ->
-	    {reply, {ok, latest}, State};
-	{value, Stmt} ->
-	    {reply, {ok, Stmt}, State}
+        none ->
+            {reply, {error, {undefined, Name}}, State};
+        {value, {_StmtBin, Version1}} when Version1 == Version ->
+            {reply, {ok, latest}, State};
+        {value, Stmt} ->
+            {reply, {ok, Stmt}, State}
     end;
 
 handle_call({execute, PoolId, Name, Params}, From, State) ->
     with_next_conn(
-      PoolId, State,
-      fun(Conn, State1) ->
-	      case gb_trees:lookup(Name, State1#state.prepares) of
-		  none ->
-		      {reply, {error, {no_such_statement, Name}}, State1};
-		  {value, {_Stmt, Version}} ->
-		      mysql_conn:execute(Conn#conn.pid, Name,
-					 Version, Params, From),
-		      {noreply, State1}
-	      end
-      end);
+        PoolId, State,
+        fun(Conn, State1) ->
+            case gb_trees:lookup(Name, State1#state.prepares) of
+                none ->
+                    {reply, {error, {no_such_statement, Name}}, State1};
+                {value, {Stmt, Version}} ->
+                    io:format("About to execute ~p~n", [Stmt]),
+                    %% mysql_conn:execute(Conn#conn.pid, Name, Version, Params, From),
+                    Response = mysql_conn:execute_with(Conn#conn.pid, Name, Version, Params, From, Stmt),
+                    {reply, Response, State1}
+            end
+        end
+    );
 
 handle_call({transaction, PoolId, Fun}, From, State) ->
     with_next_conn(
@@ -561,19 +555,12 @@ handle_call(get_logfun, _From, State) ->
     {reply, {ok, State#state.log_fun}, State}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
-    LogFun = State#state.log_fun,
-    Version1 =
-	case gb_trees:lookup(Name, State#state.prepares) of
-	    {value, {_Stmt, Version}} ->
-		Version + 1;
-	    none ->
-		1
-	end,
-    ?Log2(LogFun, debug,
-	"received prepare/2: ~p (ver ~p) ~p", [Name, Version1, Stmt]),
-    {noreply, State#state{prepares =
-			  gb_trees:enter(Name, {Stmt, Version1},
-					  State#state.prepares)}};
+    io:format("handle_cast/2 ~p~n", [{prepare, Name, Stmt}]),
+    Version1 = case gb_trees:lookup(Name, State#state.prepares) of
+        {value, {_Stmt, Version}} -> Version + 1;
+        none -> 1
+    end,
+    {noreply, State#state{prepares = gb_trees:enter(Name, {Stmt, Version1}, State#state.prepares)}};
 
 handle_cast({unprepare, Name}, State) ->
     LogFun = State#state.log_fun,
@@ -737,7 +724,7 @@ get_next_conn(PoolId, State) ->
     end.
 
 start_reconnect(Conn, LogFun) ->
-    Pid = spawn(fun () ->
+    Pid = spawn_link(fun () ->
 			reconnect_loop(Conn#conn{pid = undefined}, LogFun, 0)
 		end),
     {PoolId, Host, Port} = {Conn#conn.pool_id, Conn#conn.host, Conn#conn.port},

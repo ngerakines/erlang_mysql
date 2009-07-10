@@ -190,6 +190,9 @@ execute(Pid, Name, Version, Params, From) ->
 execute(Pid, Name, Version, Params, From, Timeout) ->
     send_msg(Pid, {execute, Name, Version, Params, From}, From, Timeout).
 
+execute_with(Pid, Name, Version, Params, From, Stmt) ->
+    send_msg(Pid, {execute, Name, Version, Params, From, Stmt}, From, ?DEFAULT_STANDALONE_TIMEOUT).
+
 transaction(Pid, Fun, From) ->
     transaction(Pid, Fun, From, ?DEFAULT_STANDALONE_TIMEOUT).
 
@@ -207,12 +210,13 @@ fetch_local(State, Query) ->
     do_query(State, Query).
 
 execute_local(State, Name, Params) ->
+    io:format("execute_local/3 ~p ~p ~p~n", [State, Name, Params]),
     case do_execute(State, Name, Params, undefined) of
-	{ok, Res, State1} ->
-	    put(?STATE_VAR, State1),
-	    Res;
-	Err ->
-	    Err
+        {ok, Res, State1} ->
+            put(?STATE_VAR, State1),
+            Res;
+        Err ->
+            Err
     end.
 
 %%--------------------------------------------------------------------
@@ -252,22 +256,13 @@ do_recv(LogFun, RecvPid, SeqNum) when is_function(LogFun);
 do_fetch(Pid, Queries, From, Timeout) ->
     send_msg(Pid, {fetch, Queries, From}, From, Timeout).
 
-send_msg(Pid, Msg, From, Timeout) ->
-    Self = self(),
-    Pid ! Msg,
-    case From of
-	Self ->
-	    %% We are not using a mysql_dispatcher, await the response
-	    receive
-		{fetch_result, Pid, Result} ->
-		    Result
-	    after Timeout ->
-		    {error, "message timed out"}
-	    end;
-	_ ->
-	    %% From is gen_server From,
-	    %% Pid will do gen_server:reply() when it has an answer
-	    ok
+send_msg(Pid, Msg, _From, Timeout) ->
+    io:format("Sending to '~p': ~p~n", [Pid, Msg]),
+    {ok, Response} = gen:call(Pid, '$mysql_conn_loop', Msg),
+    io:format("Received from '~p': ~p~n", [Pid, Response]),
+    case Response of
+        {fetch_result, _Pid, Result} -> Result;
+        Other -> Other
     end.
 
 
@@ -343,73 +338,74 @@ init(Host, Port, User, Password, Database, LogFun, Encoding, PoolId, Parent) ->
 loop(State) ->
     RecvPid = State#state.recv_pid,
     LogFun = State#state.log_fun,
-    receive
-	{fetch, Queries, From} ->
-	    send_reply(From, do_queries(State, Queries)),
-	    loop(State);
-	{transaction, Fun, From} ->
-	    put(?STATE_VAR, State),
-
-	    Res = do_transaction(State, Fun),
-
-	    %% The transaction may have changed the state of this process
-	    %% if it has executed prepared statements. This would happen in
-	    %% mysql:execute.
-	    State1 = get(?STATE_VAR),
-
-	    send_reply(From, Res),
-	    loop(State1);
-	{execute, Name, Version, Params, From} ->
-	    State1 =
-		case do_execute(State, Name, Params, Version) of
-		    {error, _} = Err ->
-			send_reply(From, Err),
-			State;
-		    {ok, Result, NewState} ->
-			send_reply(From, Result),
-			NewState
-		end,
-	    loop(State1);
-	{mysql_recv, RecvPid, data, Packet, Num} ->
-	    ?Log2(LogFun, error,
-		 "received data when not expecting any -- "
-		 "ignoring it: {~p, ~p}", [Num, Packet]),
-	    loop(State);
+    NewState = receive
+        {'$mysql_conn_loop', {From, Mref}, {fetch, Queries}} ->
+            gen:reply({From, Mref}, do_queries(State, Queries)),
+            State;
+        {'$mysql_conn_loop', {From, Mref}, {transaction, Fun}} ->
+            put(?STATE_VAR, State),
+            Res = do_transaction(State, Fun),
+            %% The transaction may have changed the state of this process
+            %% if it has executed prepared statements. This would happen in
+            %% mysql:execute.
+            gen:reply({From, Mref}, Res),
+            get(?STATE_VAR);
+        {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt}} ->
+            io:format("'~p' Received ~p~n", [self(), {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt}}]),
+            case do_execute(State, Name, Params, Version, Stmt) of
+                {error, _} = Err ->
+                    gen:reply({From, Mref}, Err),
+                    State;
+                {ok, Result, OutState} ->
+                    gen:reply({From, Mref}, Result),
+                    OutState
+            end;
+        {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1}} ->
+            io:format("'~p' Received ~p~n", [self(), {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1}}]),
+            case do_execute(State, Name, Params, Version) of
+                {error, _} = Err ->
+                    gen:reply({From, Mref}, Err),
+                    State;
+                {ok, Result, OutState} ->
+                    gen:reply({From, Mref}, Result),
+                    OutState
+            end;
+        {'$mysql_conn_loop', {_From, _Mref}, {mysql_recv, RecvPid, data, Packet, Num}} ->
+            io:format("unexpected receive ~p~n", [{mysql_recv, RecvPid, data, Packet, Num}]),
+            error_logger:error_report([?MODULE, ?LINE, unexpected_packet, {num, Num}, {packet, Packet}]),
+            State;
+        {'$mysql_conn_loop', {_From, _Mref}, Unknown} ->
+            io:format("Unknown (strict) message ~p~n", [Unknown]),
+            error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
+            %% exit(unhandled_message);
+            State;
         Unknown ->
-	    ?Log2(LogFun, error,
-		  "received unknown signal, exiting: ~p", [Unknown]),
-	    error
-    end.
-
-%% GenSrvFrom is either a gen_server:call/3 From term(),
-%% or a pid if no gen_server was used to make the query
-send_reply(GenSrvFrom, Res) when is_pid(GenSrvFrom) ->
-    %% The query was not sent using gen_server mechanisms       
-    GenSrvFrom ! {fetch_result, self(), Res};
-send_reply(GenSrvFrom, Res) ->
-    gen_server:reply(GenSrvFrom, Res).
+            io:format("Unknown (loose) message ~p~n", [Unknown]),
+            error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
+            State
+            %% exit(unhandled_message)
+    end,
+    loop(NewState).
 
 do_query(State, Query) ->
-    do_query(State#state.socket,
-	       State#state.recv_pid,
-	       State#state.log_fun,
-	       Query,
-	       State#state.mysql_version
-	      ).
+    do_query(
+        State#state.socket,
+        State#state.recv_pid,
+        State#state.log_fun,
+        Query,
+        State#state.mysql_version
+    ).
 
 do_query(Sock, RecvPid, LogFun, Query, Version) ->
     Query1 = iolist_to_binary(Query),
     ?Log2(LogFun, debug, "fetch ~p (id ~p)", [Query1,RecvPid]),
     Packet =  <<?MYSQL_QUERY_OP, Query1/binary>>,
     case do_send(Sock, Packet, 0, LogFun) of
-	ok ->
-	    get_query_response(LogFun,RecvPid,
-				    Version);
-	{error, Reason} ->
-	    Msg = io_lib:format("Failed sending data "
-				"on socket : ~p",
-				[Reason]),
-	    {error, Msg}
+        ok ->
+            get_query_response(LogFun, RecvPid, Version);
+        {error, Reason} ->
+            Msg = io_lib:format("Failed sending data on socket : ~p", [Reason]),
+            {error, Msg}
     end.
 
 do_queries(State, Queries) when not is_list(Queries) ->
@@ -461,39 +457,46 @@ rollback(State, Err) ->
     Res = do_query(State, <<"ROLLBACK">>),
     {aborted, {Err, {rollback_result, Res}}}.
 
-do_execute(State, Name, Params, ExpectedVersion) ->
+do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
+    io:format("do_execute/5 ~p ~p ~p ~p ~p~n", [State, Name, Params, ExpectedVersion, Stmt]),
     Res = case gb_trees:lookup(Name, State#state.prepares) of
-	      {value, Version} when Version == ExpectedVersion ->
-		  {ok, latest};
-	      {value, Version} ->
-		  mysql:get_prepared(Name, Version);
-	      none ->
-		  mysql:get_prepared(Name)
-	  end,
+        {value, Version} when Version == ExpectedVersion -> {ok, latest};
+        {value, Version} -> {ok, {Stmt, Version}};
+        none -> {ok, {Stmt, 1}}
+    end,
+    io:format("Looking up prepared statement: ~p~n", [Res]),
     case Res of
-	{ok, latest} ->
-	    {ok, do_execute1(State, Name, Params), State};
-	{ok, {Stmt, NewVersion}} ->
-	    prepare_and_exec(State, Name, NewVersion, Stmt, Params);
-	{error, _} = Err ->
-	    Err
+        {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
+        {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
+        {error, _} = Err -> Err
+    end.
+
+do_execute(State, Name, Params, ExpectedVersion) ->
+    io:format("do_execute/4 ~p ~p ~p ~p~n", [State, Name, Params, ExpectedVersion]),
+    Res = case gb_trees:lookup(Name, State#state.prepares) of
+        {value, Version} when Version == ExpectedVersion -> {ok, latest};
+        {value, Version} -> mysql:get_prepared(Name, Version);
+        none -> mysql:get_prepared(Name)
+    end,
+    io:format("Looking up prepared statement: ~p~n", [Res]),
+    case Res of
+        {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
+        {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
+        {error, _} = Err -> Err
     end.
 
 prepare_and_exec(State, Name, Version, Stmt, Params) ->
     NameBin = atom_to_binary(Name),
-    StmtBin = <<"PREPARE ", NameBin/binary, " FROM '",
-		Stmt/binary, "'">>,
+    StmtBin = <<"PREPARE ", NameBin/binary, " FROM '", Stmt/binary, "'">>,
     case do_query(State, StmtBin) of
-	{updated, _} ->
-	    State1 =
-		State#state{
-		  prepares = gb_trees:enter(Name, Version,
-					    State#state.prepares)},
-	    {ok, do_execute1(State1, Name, Params), State1};
-	{error, _} = Err ->
-	    Err;
-	Other ->
-	    {error, {unexpected_result, Other}}
+        {updated, _} ->
+            State1 = State#state{
+                prepares = gb_trees:enter(Name, Version, State#state.prepares)
+            },
+            {ok, do_execute1(State1, Name, Params), State1};
+        {error, _} = Err -> Err;
+        Other ->
+            {error, {unexpected_result, Other}}
     end.
 
 do_execute1(State, Name, Params) ->
