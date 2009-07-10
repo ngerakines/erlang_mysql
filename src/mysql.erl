@@ -261,10 +261,9 @@ connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect) ->
 %%      {ok, ConnPid} | {error, Reason}
 connect(PoolId, Host, Port, User, Password, Database, Encoding, Reconnect, _LinkConnection) ->
     Port1 = if Port == undefined -> ?PORT; true -> Port end,
-    Fun = fun mysql_conn:start_link/8,
-    {ok, LogFun} = gen_server:call(?SERVER, get_logfun),
+    Fun = fun mysql_conn:start_link/7,
     io:format("Creating connection ~n", []),
-    case Fun(Host, Port1, User, Password, Database, LogFun, Encoding, PoolId) of
+    case Fun(Host, Port1, User, Password, Database, Encoding, PoolId) of
         {ok, ConnPid} ->
             io:format("Created connection ~p~n", [ConnPid]),
             Conn = new_conn(PoolId, ConnPid, Reconnect, Host, Port1, User, Password, Database, Encoding),
@@ -494,7 +493,7 @@ connect(PoolId, Host, undefined, User, Password, Database, Reconnect) ->
 
 init([PoolId, Host, Port, User, Password, Database, LogFun, Encoding]) ->
     LogFun1 = if LogFun == undefined -> fun log/4; true -> LogFun end,
-    case mysql_conn:start_link(Host, Port, User, Password, Database, LogFun1, Encoding, PoolId) of
+    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
         {ok, ConnPid} ->
             Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
             io:format("Created conn ~p~n", [Conn]),
@@ -527,7 +526,6 @@ handle_call({execute, PoolId, Name, Params}, From, State) ->
                     {reply, {error, {no_such_statement, Name}}, State1};
                 {value, {Stmt, Version}} ->
                     io:format("About to execute ~p~n", [Stmt]),
-                    %% mysql_conn:execute(Conn#conn.pid, Name, Version, Params, From),
                     Response = mysql_conn:execute_with(Conn#conn.pid, Name, Version, Params, From, Stmt),
                     {reply, Response, State1}
             end
@@ -538,8 +536,8 @@ handle_call({transaction, PoolId, Fun}, From, State) ->
     with_next_conn(
       PoolId, State,
       fun(Conn, State1) ->
-	      mysql_conn:transaction(Conn#conn.pid, Fun, From),
-	      {noreply, State1}
+          mysql_conn:transaction(Conn#conn.pid, Fun, From),
+          {noreply, State1}
       end);
 
 handle_call({add_conn, Conn}, _From, State) ->
@@ -620,12 +618,12 @@ code_change(_OldVsn, State, _Extra) ->
 
 fetch_queries(PoolId, From, State, QueryList) ->
     with_next_conn(
-      PoolId, State,
-      fun(Conn, State1) ->
-	      Pid = Conn#conn.pid,
-	      mysql_conn:fetch(Pid, QueryList, From),
-	      {noreply, State1}
-      end).
+        PoolId, State,
+        fun(Conn, State1) ->
+            Pid = Conn#conn.pid,
+            mysql_conn:fetch(Pid, QueryList, From),
+            {noreply, State1}
+        end).
 
 with_next_conn(PoolId, State, Fun) ->
     case get_next_conn(PoolId, State) of

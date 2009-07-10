@@ -27,16 +27,13 @@
 %%%
 %%% To use it stand-alone, set up the connection with
 %%%
-%%%   {ok, Pid} = mysql_conn:start(Host, Port, User, Password,
-%%%                                Database, LogFun)
+%%%   {ok, Pid} = mysql_conn:start(Host, Port, User, Password, Database)
 %%%
 %%%         Host     = string()
 %%%         Port     = integer()
 %%%         User     = string()
 %%%         Password = string()
 %%%         Database = string()
-%%%         LogFun   = undefined | (gives logging to console)
-%%%                    function() of arity 3 (Level, Fmt, Args)
 %%%
 %%% Note: In stand-alone mode you have to start Erlang crypto application by
 %%% yourself with crypto:start()
@@ -70,44 +67,10 @@
 %%--------------------------------------------------------------------
 %% External exports
 %%--------------------------------------------------------------------
--export([start/8,
-	 start_link/8,
-	 fetch/3,
-	 fetch/4,
-	 execute/5,
-	 execute/6,
-	 transaction/3,
-	 transaction/4
-	]).
-
-%% private exports to be called only from the 'mysql' module
--export([fetch_local/2,
-	 execute_local/3,
-	 get_pool_id/1
-	]).
-
 -compile(export_all).
 
-%%--------------------------------------------------------------------
-%% External exports (should only be used by the 'mysql_auth' module)
-%%--------------------------------------------------------------------
--export([do_recv/3
-	]).
-
 -include("mysql.hrl").
--record(state, {
-	  mysql_version,
-	  log_fun,
-	  recv_pid,
-	  socket,
-	  data,
-
-	  %% maps statement names to their versions
-	  prepares = gb_trees:empty(),
-
-	  %% the id of the connection pool to which this connection belongs
-	  pool_id
-	 }).
+-record(state, {mysql_version, recv_pid, socket, data, prepares = gb_trees:empty(), pool_id}).
 
 -define(SECURE_CONNECTION, 32768).
 -define(MYSQL_QUERY_OP, 3).
@@ -119,37 +82,29 @@
 %% when bypassing the dispatcher.
 -define(STATE_VAR, mysql_connection_state).
 
--define(Log(LogFun,Level,Msg),
-	LogFun(?MODULE, ?LINE,Level,fun()-> {Msg,[]} end)).
--define(Log2(LogFun,Level,Msg,Params),
-	LogFun(?MODULE, ?LINE,Level,fun()-> {Msg,Params} end)).
--define(L(Msg), io:format("~p:~b ~p ~n", [?MODULE, ?LINE, Msg])).
-
-
 %%====================================================================
 %% External functions
 %%====================================================================
 
 %%--------------------------------------------------------------------
-%% Function: start(Host, Port, User, Password, Database, LogFun)
-%% Function: start_link(Host, Port, User, Password, Database, LogFun)
+%% Function: start(Host, Port, User, Password, Database)
+%% Function: start_link(Host, Port, User, Password, Database)
 %%           Host     = string()
 %%           Port     = integer()
 %%           User     = string()
 %%           Password = string()
 %%           Database = string()
-%%           LogFun   = undefined | function() of arity 3
 %% Descrip.: Starts a mysql_conn process that connects to a MySQL
 %%           server, logs in and chooses a database.
 %% Returns : {ok, Pid} | {error, Reason}
 %%           Pid    = pid()
 %%           Reason = string()
 %%--------------------------------------------------------------------
-start(Host, Port, User, Password, Database, LogFun, Encoding, PoolId) ->
-    start_link(Host, Port, User, Password, Database, LogFun, Encoding, PoolId).
+start(Host, Port, User, Password, Database, Encoding, PoolId) ->
+    start_link(Host, Port, User, Password, Database, Encoding, PoolId).
 
-start_link(Host, Port, User, Password, Database, LogFun, Encoding, PoolId) ->
-   proc_lib:start_link(?MODULE, init, [Host, Port, User, Password, Database,LogFun, Encoding, PoolId, self()]).
+start_link(Host, Port, User, Password, Database, Encoding, PoolId) ->
+   proc_lib:start_link(?MODULE, init, [Host, Port, User, Password, Database, Encoding, PoolId, self()]).
 
 %%--------------------------------------------------------------------
 %% Function: fetch(Pid, Query, From)
@@ -220,8 +175,7 @@ execute_local(State, Name, Params) ->
     end.
 
 %%--------------------------------------------------------------------
-%% Function: do_recv(LogFun, RecvPid, SeqNum)
-%%           LogFun  = undefined | function() with arity 3
+%% Function: do_recv(RecvPid, SeqNum)
 %%           RecvPid = pid(), mysql_recv process
 %%           SeqNum  = undefined | integer()
 %% Descrip.: Wait for a frame decoded and sent to us by RecvPid.
@@ -233,30 +187,26 @@ execute_local(State, Name, Params) ->
 %%
 %% Note    : Only to be used externally by the 'mysql_auth' module.
 %%--------------------------------------------------------------------
-do_recv(LogFun, RecvPid, SeqNum)  when is_function(LogFun);
-				       LogFun == undefined,
-				       SeqNum == undefined ->
+do_recv(RecvPid, SeqNum)  when SeqNum == undefined ->
     receive
         {mysql_recv, RecvPid, data, Packet, Num} ->
-	    {ok, Packet, Num};
-	{mysql_recv, RecvPid, closed, _E} ->
-	    {error, "mysql_recv: socket was closed"}
+            {ok, Packet, Num};
+        {mysql_recv, RecvPid, closed, _E} ->
+            {error, "mysql_recv: socket was closed"}
     end;
-do_recv(LogFun, RecvPid, SeqNum) when is_function(LogFun);
-				      LogFun == undefined,
-				      is_integer(SeqNum) ->
+do_recv(RecvPid, SeqNum) when is_integer(SeqNum) ->
     ResponseNum = SeqNum + 1,
     receive
         {mysql_recv, RecvPid, data, Packet, ResponseNum} ->
-	    {ok, Packet, ResponseNum};
-	{mysql_recv, RecvPid, closed, _E} ->
-	    {error, "mysql_recv: socket was closed"}
+            {ok, Packet, ResponseNum};
+        {mysql_recv, RecvPid, closed, _E} ->
+            {error, "mysql_recv: socket was closed"}
     end.
 
 do_fetch(Pid, Queries, From, Timeout) ->
     send_msg(Pid, {fetch, Queries, From}, From, Timeout).
 
-send_msg(Pid, Msg, _From, Timeout) ->
+send_msg(Pid, Msg, _From, _Timeout) ->
     io:format("Sending to '~p': ~p~n", [Pid, Msg]),
     {ok, Response} = gen:call(Pid, '$mysql_conn_loop', Msg),
     io:format("Received from '~p': ~p~n", [Pid, Response]),
@@ -267,65 +217,49 @@ send_msg(Pid, Msg, _From, Timeout) ->
 
 
 %%--------------------------------------------------------------------
-%% Function: init(Host, Port, User, Password, Database, LogFun,
-%%                Parent)
+%% Function: init(Host, Port, User, Password, Database, Parent)
 %%           Host     = string()
 %%           Port     = integer()
 %%           User     = string()
 %%           Password = string()
 %%           Database = string()
-%%           LogFun   = function() of arity 4
 %%           Parent   = pid() of process starting this mysql_conn
 %% Descrip.: Connect to a MySQL server, log in and chooses a database.
 %%           Report result of this to Parent, and then enter loop() if
 %%           we were successfull.
 %% Returns : void() | does not return
 %%--------------------------------------------------------------------
-init(Host, Port, User, Password, Database, LogFun, Encoding, PoolId, Parent) ->
-    case mysql_recv:start_link(Host, Port, LogFun, self()) of
-	{ok, RecvPid, Sock} ->
-	    case mysql_init(Sock, RecvPid, User, Password, LogFun) of
-		{ok, Version} ->
-		    Db = iolist_to_binary(Database),
-		    case do_query(Sock, RecvPid, LogFun,
-				  <<"use ", Db/binary>>,
-				  Version) of
-			{error, MySQLRes} ->
-			    ?Log2(LogFun, error,
-				 "mysql_conn: Failed changing to database "
-				 "~p : ~p",
-				 [Database,
-				  mysql:get_result_reason(MySQLRes)]),
-				proc_lib:init_ack(Parent, {error, failed_changing_database});
-
-			%% ResultType: data | updated
-			{_ResultType, _MySQLRes} ->
-			    proc_lib:init_ack(Parent, {ok, self()}),
-			    case Encoding of
-				undefined -> undefined;
-				_ ->
-				    EncodingBinary = list_to_binary(atom_to_list(Encoding)),
-				    do_query(Sock, RecvPid, LogFun,
-					     <<"set names '", EncodingBinary/binary, "'">>,
-					     Version)
-			    end,
-			    State = #state{mysql_version=Version,
-					   recv_pid = RecvPid,
-					   socket   = Sock,
-					   log_fun  = LogFun,
-					   pool_id  = PoolId,
-					   data     = <<>>
-					  },
-			    loop(State)
-		    end;
-		{error, _Reason} ->
-		    proc_lib:init_ack(Parent, {error, login_failed})
-	    end;
-	E ->
-	    ?Log2(LogFun, error,
-		 "failed connecting to ~p:~p : ~p",
-		 [Host, Port, E]),
-	    proc_lib:init_ack(Parent, {error, connect_failed})
+init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
+    case mysql_recv:start_link(Host, Port, self()) of
+        {ok, RecvPid, Sock} ->
+            case mysql_init(Sock, RecvPid, User, Password) of
+                {ok, Version} ->
+                    Db = iolist_to_binary(Database),
+                    case do_query(Sock, RecvPid, <<"use ", Db/binary>>, Version) of
+                        {error, _MySQLRes} ->
+                            proc_lib:init_ack(Parent, {error, failed_changing_database});
+                        {_ResultType, _MySQLRes} ->
+                            proc_lib:init_ack(Parent, {ok, self()}),
+                            case Encoding of
+                                undefined -> undefined;
+                                _ ->
+                                    EncodingBinary = list_to_binary(atom_to_list(Encoding)),
+                                    do_query(Sock, RecvPid, <<"set names '", EncodingBinary/binary, "'">>, Version)
+                            end,
+                            State = #state{
+                                mysql_version=Version,
+                                recv_pid = RecvPid,
+                                socket   = Sock,
+                                pool_id  = PoolId,
+                                data     = <<>>
+                            },
+                            loop(State)
+                    end;
+                {error, _Reason} ->
+                    proc_lib:init_ack(Parent, {error, login_failed})
+            end;
+        _E ->
+            proc_lib:init_ack(Parent, {error, connect_failed})
     end.
 
 %%--------------------------------------------------------------------
@@ -337,7 +271,6 @@ init(Host, Port, User, Password, Database, LogFun, Encoding, PoolId, Parent) ->
 %%--------------------------------------------------------------------
 loop(State) ->
     RecvPid = State#state.recv_pid,
-    LogFun = State#state.log_fun,
     NewState = receive
         {'$mysql_conn_loop', {From, Mref}, {fetch, Queries}} ->
             gen:reply({From, Mref}, do_queries(State, Queries)),
@@ -391,18 +324,16 @@ do_query(State, Query) ->
     do_query(
         State#state.socket,
         State#state.recv_pid,
-        State#state.log_fun,
         Query,
         State#state.mysql_version
     ).
 
-do_query(Sock, RecvPid, LogFun, Query, Version) ->
+do_query(Sock, RecvPid, Query, Version) ->
     Query1 = iolist_to_binary(Query),
-    ?Log2(LogFun, debug, "fetch ~p (id ~p)", [Query1,RecvPid]),
     Packet =  <<?MYSQL_QUERY_OP, Query1/binary>>,
-    case do_send(Sock, Packet, 0, LogFun) of
+    case do_send(Sock, Packet, 0) of
         ok ->
-            get_query_response(LogFun, RecvPid, Version);
+            get_query_response(RecvPid, Version);
         {error, Reason} ->
             Msg = io_lib:format("Failed sending data on socket : ~p", [Reason]),
             {error, Msg}
@@ -411,46 +342,48 @@ do_query(Sock, RecvPid, LogFun, Query, Version) ->
 do_queries(State, Queries) when not is_list(Queries) ->
     do_query(State, Queries);
 do_queries(State, Queries) ->
-    do_queries(State#state.socket,
-	       State#state.recv_pid,
-	       State#state.log_fun,
-	       Queries,
-	       State#state.mysql_version
-	      ).
+    do_queries(
+        State#state.socket,
+        State#state.recv_pid,
+        Queries,
+        State#state.mysql_version
+    ).
 
 %% Execute a list of queries, returning the response for the last query.
 %% If a query returns an error before the last query is executed, the
 %% loop is aborted and the error is returned. 
-do_queries(Sock, RecvPid, LogFun, Queries, Version) ->
-    catch
-	lists:foldl(
-	  fun(Query, _LastResponse) ->
-		  case do_query(Sock, RecvPid, LogFun, Query, Version) of
-		      {error, _} = Err -> throw(Err);
-		      Res -> Res
-		  end
-	  end, ok, Queries).
+do_queries(Sock, RecvPid, Queries, Version) ->
+    catch(
+        lists:foldl(
+            fun(Query, _LastResponse) ->
+                case do_query(Sock, RecvPid, Query, Version) of
+                    {error, _} = Err -> throw(Err);
+                    Res -> Res
+                end
+            end,
+            ok,
+            Queries
+        )
+    ).
 
 do_transaction(State, Fun) ->
     case do_query(State, <<"BEGIN">>) of
- 	{error, _} = Err ->	
- 	    {aborted, Err};
- 	_ ->
-	    case catch Fun() of
-		error = Err -> rollback(State, Err);
-		{error, _} = Err -> rollback(State, Err);
-		{'EXIT', _} = Err -> rollback(State, Err);
-		Res ->
-		    case do_query(State, <<"COMMIT">>) of
-			{error, _} = Err ->
-			    rollback(State, {commit_error, Err});
-			_ ->
-			    case Res of
-				{atomic, _} -> Res;
-				_ -> {atomic, Res}
-			    end
-		    end
-	    end
+        {error, _} = Err ->	 {aborted, Err};
+        _ ->
+            case catch Fun() of
+                error = Err -> rollback(State, Err);
+                {error, _} = Err -> rollback(State, Err);
+                {'EXIT', _} = Err -> rollback(State, Err);
+                Res ->
+                    case do_query(State, <<"COMMIT">>) of
+                        {error, _} = Err -> rollback(State, {commit_error, Err});
+                        _ ->
+                            case Res of
+                                {atomic, _} -> Res;
+                                _ -> {atomic, Res}
+                            end
+                    end
+            end
     end.
 
 rollback(State, Err) ->
@@ -512,28 +445,29 @@ make_statements_for_execute(Name, Params) ->
 
     NameBin = atom_to_binary(Name),
     
-    ParamNames =
-	lists:foldl(
-	  fun(Num, Acc) ->
-		  ParamName = [$@ | integer_to_list(Num)],
-		  if Num == 1 ->
-			  ParamName ++ Acc;
-		     true ->
-			  [$, | ParamName] ++ Acc
-		  end
-	  end, [], lists:reverse(ParamNums)),
+    ParamNames = lists:foldl(
+        fun(Num, Acc) ->
+            ParamName = [$@ | integer_to_list(Num)],
+            if
+                Num == 1 -> ParamName ++ Acc;
+                true -> [$, | ParamName] ++ Acc
+            end
+        end,
+        [], lists:reverse(ParamNums)
+    ),
     ParamNamesBin = list_to_binary(ParamNames),
 
-    ExecStmt = <<"EXECUTE ", NameBin/binary, " USING ",
-		ParamNamesBin/binary>>,
+    ExecStmt = <<"EXECUTE ", NameBin/binary, " USING ", ParamNamesBin/binary>>,
 
     ParamVals = lists:zip(ParamNums, Params),
     Stmts = lists:foldl(
-	      fun({Num, Val}, Acc) ->
-		      NumBin = mysql:encode(Num, true),
-		      ValBin = mysql:encode(Val, true),
-		      [<<"SET @", NumBin/binary, "=", ValBin/binary>> | Acc]
-	       end, [ExecStmt], lists:reverse(ParamVals)),
+        fun({Num, Val}, Acc) ->
+            NumBin = mysql:encode(Num, true),
+            ValBin = mysql:encode(Val, true),
+            [<<"SET @", NumBin/binary, "=", ValBin/binary>> | Acc]
+        end,
+        [ExecStmt], lists:reverse(ParamVals)
+    ),
     Stmts.
 
 atom_to_binary(Val) ->
@@ -541,46 +475,34 @@ atom_to_binary(Val) ->
     Bin.
 
 %%--------------------------------------------------------------------
-%% Function: mysql_init(Sock, RecvPid, User, Password, LogFun)
+%% Function: mysql_init(Sock, RecvPid, User, Password)
 %%           Sock     = term(), gen_tcp socket
 %%           RecvPid  = pid(), mysql_recv process
 %%           User     = string()
 %%           Password = string()
-%%           LogFun   = undefined | function() with arity 3
 %% Descrip.: Try to authenticate on our new socket.
 %% Returns : ok | {error, Reason}
 %%           Reason = string()
 %%--------------------------------------------------------------------
-mysql_init(Sock, RecvPid, User, Password, LogFun) ->
-    case do_recv(LogFun, RecvPid, undefined) of
+mysql_init(Sock, RecvPid, User, Password) ->
+    case do_recv(RecvPid, undefined) of
 	{ok, Packet, InitSeqNum} ->
-	    {Version, Salt1, Salt2, Caps} = greeting(Packet, LogFun),
+	    {Version, Salt1, Salt2, Caps} = greeting(Packet),
 	    AuthRes =
 		case Caps band ?SECURE_CONNECTION of
 		    ?SECURE_CONNECTION ->
-			mysql_auth:do_new_auth(
-			  Sock, RecvPid, InitSeqNum + 1,
-			  User, Password, Salt1, Salt2, LogFun);
+			mysql_auth:do_new_auth(Sock, RecvPid, InitSeqNum + 1, User, Password, Salt1, Salt2);
 		    _ ->
-			mysql_auth:do_old_auth(
-			  Sock, RecvPid, InitSeqNum + 1, User, Password,
-			  Salt1, LogFun)
+			mysql_auth:do_old_auth(Sock, RecvPid, InitSeqNum + 1, User, Password,Salt1)
 		end,
 	    case AuthRes of
 		{ok, <<0:8, _Rest/binary>>, _RecvNum} ->
 		    {ok,Version};
-		{ok, <<255:8, Code:16/little, Message/binary>>, _RecvNum} ->
-		    ?Log2(LogFun, error, "init error ~p: ~p",
-			 [Code, binary_to_list(Message)]),
+		{ok, <<255:8, _Code:16/little, Message/binary>>, _RecvNum} ->
 		    {error, binary_to_list(Message)};
 		{ok, RecvPacket, _RecvNum} ->
-		    ?Log2(LogFun, error,
-			  "init unknown error ~p",
-			  [binary_to_list(RecvPacket)]),
 		    {error, binary_to_list(RecvPacket)};
 		{error, Reason} ->
-		    ?Log2(LogFun, error,
-			  "init failed receiving data : ~p", [Reason]),
 		    {error, Reason}
 	    end;
 	{error, Reason} ->
@@ -588,32 +510,25 @@ mysql_init(Sock, RecvPid, User, Password, LogFun) ->
     end.
 
 %% part of mysql_init/4
-greeting(Packet, LogFun) ->
-    <<Protocol:8, Rest/binary>> = Packet,
+greeting(Packet) ->
+    <<_Protocol:8, Rest/binary>> = Packet,
     {Version, Rest2} = asciz(Rest),
     <<_TreadID:32/little, Rest3/binary>> = Rest2,
     {Salt, Rest4} = asciz(Rest3),
     <<Caps:16/little, Rest5/binary>> = Rest4,
-    <<ServerChar:16/binary-unit:8, Rest6/binary>> = Rest5,
+    <<_ServerChar:16/binary-unit:8, Rest6/binary>> = Rest5,
     {Salt2, _Rest7} = asciz(Rest6),
-    ?Log2(LogFun, debug,
-	  "greeting version ~p (protocol ~p) salt ~p caps ~p serverchar ~p"
-	  "salt2 ~p",
-	  [Version, Protocol, Salt, Caps, ServerChar, Salt2]),
-    {normalize_version(Version, LogFun), Salt, Salt2, Caps}.
+    {normalize_version(Version), Salt, Salt2, Caps}.
 
 %% part of greeting/2
-asciz(Data) when binary(Data) ->
+asciz(Data) when is_binary(Data) ->
     mysql:asciz_binary(Data, []);
-asciz(Data) when list(Data) ->
-    {String, [0 | Rest]} = lists:splitwith(fun (C) ->
-						   C /= 0
-					   end, Data),
+asciz(Data) when is_list(Data) ->
+    {String, [0 | Rest]} = lists:splitwith(fun (C) -> C /= 0 end, Data),
     {String, Rest}.
 
 %%--------------------------------------------------------------------
-%% Function: get_query_response(LogFun, RecvPid)
-%%           LogFun  = undefined | function() with arity 3
+%% Function: get_query_response(RecvPid)
 %%           RecvPid = pid(), mysql_recv process
 %%           Version = integer(), Representing MySQL version used
 %% Descrip.: Wait for frames until we have a complete query response.
@@ -625,8 +540,8 @@ asciz(Data) when list(Data) ->
 %%           AffectedRows = int()
 %%           Reason       = term()
 %%--------------------------------------------------------------------
-get_query_response(LogFun, RecvPid, Version) ->
-    case do_recv(LogFun, RecvPid, undefined) of
+get_query_response(RecvPid, Version) ->
+    case do_recv(RecvPid, undefined) of
 	{ok, <<Fieldcount:8, Rest/binary>>, _} ->
 	    case Fieldcount of
 		0 ->
@@ -651,9 +566,9 @@ get_query_response(LogFun, RecvPid, Version) ->
 		    {error, #mysql_result{error=Message}};
 		_ ->
 		    %% Tabular data received
-		    case get_fields(LogFun, RecvPid, [], Version) of
+		    case get_fields(RecvPid, [], Version) of
 			{ok, Fields} ->
-			    case get_rows(Fields, LogFun, RecvPid, []) of
+			    case get_rows(Fields, RecvPid, []) of
 				{ok, Rows} ->
 				    {data, #mysql_result{fieldinfo=Fields,
 							 rows=Rows}};
@@ -712,8 +627,7 @@ get_length_coded_string(Bin) ->
 	end.	
 	
 %%--------------------------------------------------------------------
-%% Function: get_fields(LogFun, RecvPid, [], Version)
-%%           LogFun  = undefined | function() with arity 3
+%% Function: get_fields(RecvPid, [], Version)
 %%           RecvPid = pid(), mysql_recv process
 %%           Version = integer(), Representing MySQL version used
 %% Descrip.: Received and decode field information.
@@ -723,8 +637,8 @@ get_length_coded_string(Bin) ->
 %%           Reason    = term()
 %%--------------------------------------------------------------------
 %% Support for MySQL 4.0.x:
-get_fields(LogFun, RecvPid, Res, ?MYSQL_4_0) ->
-    case do_recv(LogFun, RecvPid, undefined) of
+get_fields(RecvPid, Res, ?MYSQL_4_0) ->
+    case do_recv(RecvPid, undefined) of
 	{ok, Packet, _Num} ->
 	    case Packet of
 		<<254:8>> ->
@@ -746,14 +660,14 @@ get_fields(LogFun, RecvPid, Res, ?MYSQL_4_0) ->
 			    %%       using the same 4.1 formalism and could 
 			    %%       be expanded to atoms:
 			    Type},
-		    get_fields(LogFun, RecvPid, [This | Res], ?MYSQL_4_0)
+		    get_fields(RecvPid, [This | Res], ?MYSQL_4_0)
 	    end;
 	{error, Reason} ->
 	    {error, Reason}
     end;
 %% Support for MySQL 4.1.x and 5.x:
-get_fields(LogFun, RecvPid, Res, ?MYSQL_4_1) ->
-    case do_recv(LogFun, RecvPid, undefined) of
+get_fields(RecvPid, Res, ?MYSQL_4_1) ->
+    case do_recv(RecvPid, undefined) of
 	{ok, Packet, _Num} ->
 	    case Packet of
 		<<254:8>> ->
@@ -779,31 +693,30 @@ get_fields(LogFun, RecvPid, Res, ?MYSQL_4_1) ->
 			    Field,
 			    Length,
 			    get_field_datatype(Type)},
-		    get_fields(LogFun, RecvPid, [This | Res], ?MYSQL_4_1)
+		    get_fields(RecvPid, [This | Res], ?MYSQL_4_1)
 	    end;
 	{error, Reason} ->
 	    {error, Reason}
     end.
 
 %%--------------------------------------------------------------------
-%% Function: get_rows(N, LogFun, RecvPid, [])
+%% Function: get_rows(N, RecvPid, [])
 %%           N       = integer(), number of rows to get
-%%           LogFun  = undefined | function() with arity 3
 %%           RecvPid = pid(), mysql_recv process
 %% Descrip.: Receive and decode a number of rows.
 %% Returns : {ok, Rows} |
 %%           {error, Reason}
 %%           Rows = list() of [string()]
 %%--------------------------------------------------------------------
-get_rows(Fields, LogFun, RecvPid, Res) ->
-    case do_recv(LogFun, RecvPid, undefined) of
+get_rows(Fields, RecvPid, Res) ->
+    case do_recv(RecvPid, undefined) of
 	{ok, Packet, _Num} ->
 	    case Packet of
 		<<254:8, Rest/binary>> when size(Rest) < 8 ->
 		    {ok, lists:reverse(Res)};
 		_ ->
 		    {ok, This} = get_row(Fields, Packet, []),
-		    get_rows(Fields, LogFun, RecvPid, [This | Res])
+		    get_rows(Fields, RecvPid, [This | Res])
 	    end;
 	{error, Reason} ->
 	    {error, Reason}
@@ -835,37 +748,32 @@ get_with_length(<<Length:8, Rest/binary>>) when Length < 251 ->
 
 
 %%--------------------------------------------------------------------
-%% Function: do_send(Sock, Packet, SeqNum, LogFun)
+%% Function: do_send(Sock, Packet, SeqNum)
 %%           Sock   = term(), gen_tcp socket
 %%           Packet = binary()
 %%           SeqNum = integer(), packet sequence number
-%%           LogFun = undefined | function() with arity 3
 %% Descrip.: Send a packet to the MySQL server.
 %% Returns : result of gen_tcp:send/2
 %%--------------------------------------------------------------------
-do_send(Sock, Packet, SeqNum, _LogFun) when is_binary(Packet), is_integer(SeqNum) ->
+do_send(Sock, Packet, SeqNum) when is_binary(Packet), is_integer(SeqNum) ->
     Data = <<(size(Packet)):24/little, SeqNum:8, Packet/binary>>,
     gen_tcp:send(Sock, Data).
 
 %%--------------------------------------------------------------------
-%% Function: normalize_version(Version, LogFun)
+%% Function: normalize_version(Version)
 %%           Version  = string()
-%%           LogFun   = undefined | function() with arity 3
 %% Descrip.: Return a flag corresponding to the MySQL version used.
 %%           The protocol used depends on this flag.
 %% Returns : Version = string()
 %%--------------------------------------------------------------------
-normalize_version([$4,$.,$0|_T], LogFun) ->
-    ?Log(LogFun, debug, "switching to MySQL 4.0.x protocol."),
+normalize_version([$4,$.,$0|_T]) ->
     ?MYSQL_4_0;
-normalize_version([$4,$.,$1|_T], _LogFun) ->
+normalize_version([$4,$.,$1|_T]) ->
     ?MYSQL_4_1;
-normalize_version([$5|_T], _LogFun) ->
+normalize_version([$5|_T]) ->
     %% MySQL version 5.x protocol is compliant with MySQL 4.1.x:
     ?MYSQL_4_1; 
-normalize_version(_Other, LogFun) ->
-    ?Log(LogFun, error, "MySQL version not supported: MySQL Erlang module "
-	 "might not work correctly."),
+normalize_version(_Other) ->
     %% Error, but trying the oldest protocol anyway:
     ?MYSQL_4_0.
 

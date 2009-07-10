@@ -17,9 +17,9 @@
 %% External exports (should only be used by the 'mysql_conn' module)
 %%--------------------------------------------------------------------
 -export([
-	 do_old_auth/7,
-	 do_new_auth/8
-	]).
+   do_old_auth/6,
+   do_new_auth/7
+]).
 
 %%--------------------------------------------------------------------
 %% Macros
@@ -52,11 +52,11 @@
 %% Descrip.: Perform old-style MySQL authentication.
 %% Returns : result of mysql_conn:do_recv/3
 %%--------------------------------------------------------------------
-do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt1, LogFun) ->
+do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt1) ->
     Auth = password_old(Password, Salt1),
     Packet2 = make_auth(User, Auth),
-    do_send(Sock, Packet2, SeqNum, LogFun),
-    mysql_conn:do_recv(LogFun, RecvPid, SeqNum).
+    do_send(Sock, Packet2, SeqNum),
+    mysql_conn:do_recv(RecvPid, SeqNum).
 
 %%--------------------------------------------------------------------
 %% Function: do_new_auth(Sock, RecvPid, SeqNum, User, Password, Salt1,
@@ -72,22 +72,21 @@ do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt1, LogFun) ->
 %% Descrip.: Perform MySQL authentication.
 %% Returns : result of mysql_conn:do_recv/3
 %%--------------------------------------------------------------------
-do_new_auth(Sock, RecvPid, SeqNum, User, Password, Salt1, Salt2, LogFun) ->
+do_new_auth(Sock, RecvPid, SeqNum, User, Password, Salt1, Salt2) ->
     Auth = password_new(Password, Salt1 ++ Salt2),
     Packet2 = make_new_auth(User, Auth, none),
-    do_send(Sock, Packet2, SeqNum, LogFun),
-    case mysql_conn:do_recv(LogFun, RecvPid, SeqNum) of
-	{ok, Packet3, SeqNum2} ->
-	    case Packet3 of
-		<<254:8>> ->
-		    AuthOld = password_old(Password, Salt1),
-		    do_send(Sock, <<AuthOld/binary, 0:8>>, SeqNum2 + 1, LogFun),
-		    mysql_conn:do_recv(LogFun, RecvPid, SeqNum2 + 1);
-		_ ->
-		    {ok, Packet3, SeqNum2}
-	    end;
-	{error, Reason} ->
-	    {error, Reason}
+    do_send(Sock, Packet2, SeqNum),
+    case mysql_conn:do_recv(RecvPid, SeqNum) of
+        {ok, Packet3, SeqNum2} ->
+            case Packet3 of
+                <<254:8>> ->
+                    AuthOld = password_old(Password, Salt1),
+                    do_send(Sock, <<AuthOld/binary, 0:8>>, SeqNum2 + 1),
+                    mysql_conn:do_recv(RecvPid, SeqNum2 + 1);
+                _ ->
+                    {ok, Packet3, SeqNum2}
+            end;
+        {error, Reason} -> {error, Reason}
     end.
 
 %%====================================================================
@@ -171,23 +170,19 @@ dualmap(F, [E1 | R1], [E2 | R2]) ->
     [F(E1, E2) | dualmap(F, R1, R2)].
 
 bxor_binary(B1, B2) ->
-    list_to_binary(dualmap(fun (E1, E2) ->
-				   E1 bxor E2
-			   end, binary_to_list(B1), binary_to_list(B2))).
+    list_to_binary(dualmap(fun (E1, E2) -> E1 bxor E2 end, binary_to_list(B1), binary_to_list(B2))).
 
 password_new(Password, Salt) ->
     Stage1 = crypto:sha(Password),
     Stage2 = crypto:sha(Stage1),
     Res = crypto:sha_final(
-	    crypto:sha_update(
-	      crypto:sha_update(crypto:sha_init(), Salt),
-	      Stage2)
-	   ),
+        crypto:sha_update(
+            crypto:sha_update(crypto:sha_init(), Salt),
+            Stage2
+        )
+    ),
     bxor_binary(Res, Stage1).
 
-
-do_send(Sock, Packet, Num, LogFun) ->
-    LogFun(?MODULE, ?LINE, debug,
-	   fun() -> {"mysql_auth send packet ~p: ~p", [Num, Packet]} end),
+do_send(Sock, Packet, Num) ->
     Data = <<(size(Packet)):24/little, Num:8, Packet/binary>>,
     gen_tcp:send(Sock, Data).
