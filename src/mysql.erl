@@ -70,10 +70,6 @@
 -module(mysql).
 -behaviour(gen_server).
 
-%% @type mysql_result() = term()
-%% @type query_result = {data, mysql_result()} | {updated, mysql_result()} |
-%%   {error, mysql_result()}
-
 %% Internal exports - gen_server callbacks
 -export([
     init/1,
