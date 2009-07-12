@@ -18,12 +18,6 @@ main(_) ->
         etap:is(mysql:get_result_affected_rows(MySQLRes), 0, "Creating table"),
         ok
     end)(),
-
-    (fun() ->
-        {updated, MySQLRes} = mysql:execute(test1, insert_foo, [1], 8000),
-        etap:is(mysql:get_result_affected_rows(MySQLRes), 1, "Creating row"),
-        ok
-    end)(),
     
     (fun() ->
         lists:foreach(
@@ -32,7 +26,7 @@ main(_) ->
                 etap:is(mysql:get_result_affected_rows(MySQLRes), 1, "Creating row"),
                 ok
             end,
-            lists:seq(2, 1000)
+            lists:seq(1, 3)
         ),
         ok
     end)(),
@@ -46,24 +40,6 @@ main(_) ->
     (fun() ->
         {data, MySQLRes} = mysql:fetch(test1, [<<"SELECT * FROM foo WHERE id = 1;">>, <<"SELECT * FROM foo WHERE id = 2;">>]),
         etap:is(mysql:get_result_rows(MySQLRes), [[2]], "Selecting row"),
-        ok
-    end)(),
-
-    (fun() ->
-        lists:foreach(
-            fun(Data) ->
-                {data, MySQLRes} = mysql:execute(test1, select_foo, [Data], 8000),
-                etap:is(mysql:get_result_rows(MySQLRes), [[Data]], "Selecting row"),
-                ok
-            end,
-            lists:seq(2, 1000)
-        ),
-        ok
-    end)(),
-
-    (fun() ->
-        {updated, MySQLRes} = mysql:execute(test1, delete_foo, [1], 8000),
-        etap:is(mysql:get_result_affected_rows(MySQLRes), 1, "Deleting row"),
         ok
     end)(),
 

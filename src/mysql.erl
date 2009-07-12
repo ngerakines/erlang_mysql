@@ -25,8 +25,6 @@
 %%%
 %%%   start_link(PoolId, Host, User, Password, Database)
 %%%   start_link(PoolId, Host, Port, User, Password, Database)
-%%%   start_link(PoolId, Host, User, Password, Database, LogFun)
-%%%   start_link(PoolId, Host, Port, User, Password, Database, LogFun)
 %%%
 %%% (These functions also have non-linking coutnerparts.)
 %%%
@@ -84,36 +82,12 @@
 %% Records
 -include("mysql.hrl").
 
--record(conn, {
-	  pool_id,      %% atom(), the pool's id
-	  pid,          %% pid(), mysql_conn process	 
-	  reconnect,	%% true | false, should mysql_dispatcher try
-                        %% to reconnect if this connection dies?
-	  host,		%% string()
-	  port,		%% integer()
-	  user,		%% string()
-	  password,	%% string()
-	  database,	%% string()
-	  encoding
-	 }).
-
+-record(conn, {pool_id, pid, reconnect, host, port, user, password, database, encoding}).
 -record(state, {
-	  %% gb_tree mapping connection
-	  %% pool id to a connection pool tuple
-	  conn_pools = gb_trees:empty(), 
-	                
-
-	  %% gb_tree mapping connection Pid
-	  %% to pool id
-	  pids_pools = gb_trees:empty(), 
-	                                 
-	  %% function for logging,
-	  log_fun,	
-
-
-	  %% maps names to {Statement::binary(), Version::integer()} values
-	  prepares = gb_trees:empty()
-	 }).
+    conn_pools = gb_trees:empty(),
+    pids_pools = gb_trees:empty(),
+    prepares = gb_trees:empty()
+}).
 
 %% Macros
 -define(SERVER, mysql_dispatcher).
@@ -121,19 +95,6 @@
 -define(CONNECT_TIMEOUT, 5000).
 -define(LOCAL_FILES, 128).
 -define(PORT, 3306).
-
-%% used for debugging
--define(L(Msg), io:format("~p:~b ~p ~n", [?MODULE, ?LINE, Msg])).
-
-%% Log messages are designed to instantiated lazily only if the logging level
-%% permits a log message to be logged
--define(Log(LogFun,Level,Msg),
-	LogFun(?MODULE,?LINE,Level,fun()-> {Msg,[]} end)).
--define(Log2(LogFun,Level,Msg,Params),
-	LogFun(?MODULE,?LINE,Level,fun()-> {Msg,Params} end)).
-			     
-
-log(_Module, _Line, _Level, _FormatFun) -> ok.
 
 %% @spec start_link(PoolId, Host, Port, User, Password, Database, Encoding) -> Result
 %%       PoolId = atom()
@@ -150,8 +111,11 @@ start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
 start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
     crypto:start(),
     gen_server:start_link(
-      {local, ?SERVER}, ?MODULE,
-      [PoolId, Host, Port, User, Password, Database, Encoding], []).
+        {local, ?SERVER},
+        ?MODULE,
+        [PoolId, Host, Port, User, Password, Database, Encoding],
+        []
+    ).
 
 %% @spec: connect(PoolId::atom(), Host::string(), Port::integer() | undefined,
 %%    User::string(), Password::string(), Database::string(),
@@ -192,16 +156,6 @@ new_conn(PoolId, ConnPid, Reconnect, Host, Port, User, Password, Database, Encod
                 pid = ConnPid,
                 reconnect = false
             }
-    end.
-
-%% @spec fetch(Query::iolist()) -> query_result()
-%% @doc Fetch a query inside a transaction.
-fetch(Query) ->
-    case get(?STATE_VAR) of
-        undefined ->
-            {error, not_in_transaction};
-        State ->
-            mysql_conn:fetch_local(State, Query)
     end.
 
 %% @doc Send a query to a connection from the connection pool and wait
@@ -267,27 +221,6 @@ execute(PoolId, Name, Params) when is_list(Params) ->
 execute(PoolId, Name, Params, Timeout) ->
     call_server({execute, PoolId, Name, Params}, Timeout).
 
-%% @doc Execute a transaction in a connection belonging to the connection pool.
-%% Fun is a function containing a sequence of calls to fetch() and/or
-%% execute().
-%% If an error occurs, or if the function does any of the following:
-%%
-%% - throw(error)
-%% - throw({error, Err})
-%% - return error
-%% - return {error, Err}
-%% - exit(Reason)
-%%
-%% the transaction is automatically rolled back.
-%%
-%% @spec transaction(PoolId::atom(), Fun::function()) ->
-%%   {atomic, Result} | {aborted, {Reason, {rollback_result, Result}}}
-transaction(PoolId, Fun) ->
-    transaction(PoolId, Fun, undefined).
-
-transaction(PoolId, Fun, Timeout) ->
-    call_server({transaction, PoolId, Fun}, Timeout).
-
 %% @doc Extract the FieldInfo from MySQL Result on data received.
 %%
 %% @spec get_result_field_info(MySQLRes::mysql_result()) ->
@@ -318,12 +251,10 @@ get_result_insert_id(#mysql_result{insert_id=InsertID}) -> InsertID.
 get_result_reason(#mysql_result{error=Reason}) -> Reason.
 
 init([PoolId, Host, Port, User, Password, Database, Encoding]) ->
-    LogFun = fun log/4,
     case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
         {ok, ConnPid} ->
             Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
-            State = #state{log_fun = LogFun},
-            {ok, add_conn(Conn, State)};
+            {ok, add_conn(Conn, #state{ })};
         {error, Reason} ->
             {stop, {error, Reason}}
     end.
@@ -333,7 +264,7 @@ handle_call({fetch, PoolId, Query}, From, State) ->
         PoolId, State,
         fun(Conn, State1) ->
             Pid = Conn#conn.pid,
-            Results = mysql_conn:fetch(Pid, [Query], From),
+            Results = mysql_conn:fetch(Pid, Query, From),
             {reply, Results, State1}
         end
     );
@@ -356,19 +287,11 @@ handle_call({execute, PoolId, Name, Params}, From, State) ->
                 none ->
                     {reply, {error, {no_such_statement, Name}}, State1};
                 {value, {Stmt, Version}} ->
-                    Response = mysql_conn:execute_with(Conn#conn.pid, Name, Version, Params, From, Stmt),
+                    Response = mysql_conn:execute(Conn#conn.pid, Name, Version, Params, From, Stmt),
                     {reply, Response, State1}
             end
         end
     );
-
-handle_call({transaction, PoolId, Fun}, From, State) ->
-    with_next_conn(
-      PoolId, State,
-      fun(Conn, State1) ->
-          Result = mysql_conn:transaction(Conn#conn.pid, Fun, From),
-          {reply, Result, State1}
-      end);
 
 handle_call({add_conn, Conn}, _From, State) ->
     NewState = add_conn(Conn, State),

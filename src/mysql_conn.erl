@@ -30,7 +30,7 @@
 %% @doc A module that directly creates and manages MySQL connections.
 -module(mysql_conn).
 
--export([start_link/7, fetch/3, fetch/4, execute/5, execute/6, execute_with/6]).
+-export([start_link/7, fetch/3, fetch/4, execute/6]).
 -export([init/8, do_recv/2]).
 
 -include("mysql.hrl").
@@ -75,41 +75,28 @@ fetch(Pid, Queries, From) ->
 fetch(Pid, Queries, From, Timeout)  ->
     do_fetch(Pid, Queries, From, Timeout).
 
-execute(Pid, Name, Version, Params, From) ->
-    execute(Pid, Name, Version, Params, From, ?DEFAULT_STANDALONE_TIMEOUT).
-
-execute(Pid, Name, Version, Params, From, Timeout) ->
-    send_msg(Pid, {execute, Name, Version, Params, From}, From, Timeout).
-
-execute_with(Pid, Name, Version, Params, From, Stmt) ->
+execute(Pid, Name, Version, Params, From, Stmt) ->
     send_msg(Pid, {execute, Name, Version, Params, From, Stmt}, From, ?DEFAULT_STANDALONE_TIMEOUT).
 
 %% @private
 init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
     case mysql_recv:start_link(Host, Port, self()) of
         {ok, RecvPid, Sock} ->
+            %% (NKG) Does this socket need to be explicitly closed if auth fails?
             case mysql_init(Sock, RecvPid, User, Password) of
                 {ok, Version} ->
-                    Db = iolist_to_binary(Database),
-                    case do_query(Sock, RecvPid, <<"use ", Db/binary>>, Version) of
-                        {error, _MySQLRes} ->
-                            proc_lib:init_ack(Parent, {error, failed_changing_database});
-                        {_ResultType, _MySQLRes} ->
+                    case set_database(Sock, RecvPid, Version, Database) of
+                        E = {error, _} -> proc_lib:init_ack(Parent, E);
+                        ok ->
                             proc_lib:init_ack(Parent, {ok, self()}),
-                            case Encoding of
-                                undefined -> undefined;
-                                _ ->
-                                    EncodingBinary = list_to_binary(atom_to_list(Encoding)),
-                                    do_query(Sock, RecvPid, <<"set names '", EncodingBinary/binary, "'">>, Version)
-                            end,
-                            State = #state{
-                                mysql_version=Version,
+                            set_encoding(Sock, RecvPid, Version, Encoding),
+                            loop(#state{
+                                mysql_version = Version,
                                 recv_pid = RecvPid,
                                 socket   = Sock,
                                 pool_id  = PoolId,
                                 data     = <<>>
-                            },
-                            loop(State)
+                            })
                     end;
                 {error, _Reason} ->
                     proc_lib:init_ack(Parent, {error, login_failed})
@@ -118,6 +105,20 @@ init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
             proc_lib:init_ack(Parent, {error, connect_failed})
     end.
 
+set_database(_, _, _, undefined) -> ok;
+set_database(Sock, RecvPid, Version, Database) ->
+    Db = iolist_to_binary(Database),
+    case do_query(Sock, RecvPid, <<"use ", Db/binary>>, Version) of
+        {error, _MySQLRes} -> {error, failed_changing_database};
+        _ -> ok
+    end.
+
+set_encoding(_, _, _, undefined) -> ok;
+set_encoding(Sock, RecvPid, Version, Encoding) when is_atom(Encoding) ->
+    EncodingBinary = erlang:atom_to_binary(Encoding, utf8),
+    do_query(Sock, RecvPid, <<"set names '", EncodingBinary/binary, "'">>, Version);
+set_encoding(_, _, _, _) -> ok.
+
 %% @private
 loop(State) ->
     RecvPid = State#state.recv_pid,
@@ -125,25 +126,8 @@ loop(State) ->
         {'$mysql_conn_loop', {From, Mref}, {fetch, Queries}} ->
             gen:reply({From, Mref}, do_queries(State, Queries)),
             State;
-        {'$mysql_conn_loop', {From, Mref}, {transaction, Fun}} ->
-            put(?STATE_VAR, State),
-            Res = do_transaction(State, Fun),
-            %% The transaction may have changed the state of this process
-            %% if it has executed prepared statements. This would happen in
-            %% mysql:execute.
-            gen:reply({From, Mref}, Res),
-            get(?STATE_VAR);
         {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt}} ->
             case do_execute(State, Name, Params, Version, Stmt) of
-                {error, _} = Err ->
-                    gen:reply({From, Mref}, Err),
-                    State;
-                {ok, Result, OutState} ->
-                    gen:reply({From, Mref}, Result),
-                    OutState
-            end;
-        {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1}} ->
-            case do_execute(State, Name, Params, Version) of
                 {error, _} = Err ->
                     gen:reply({From, Mref}, Err),
                     State;
@@ -216,33 +200,6 @@ do_queries(Sock, RecvPid, Queries, Version) ->
     ).
 
 %% @private
-do_transaction(State, Fun) ->
-    case do_query(State, <<"BEGIN">>) of
-        {error, _} = Err ->	 {aborted, Err};
-        _ ->
-            case catch Fun() of
-                error = Err -> rollback(State, Err);
-                {error, _} = Err -> rollback(State, Err);
-                {'EXIT', _} = Err -> rollback(State, Err);
-                Res ->
-                    case do_query(State, <<"COMMIT">>) of
-                        {error, _} = Err -> rollback(State, {commit_error, Err});
-                        _ ->
-                            case Res of
-                                {atomic, _} -> Res;
-                                _ -> {atomic, Res}
-                            end
-                    end
-            end
-    end.
-
-%% @private
-rollback(State, Err) ->
-    Res = do_query(State, <<"ROLLBACK">>),
-    {aborted, {Err, {rollback_result, Res}}}.
-
-%% @todo FIX ME!
-%% @private
 do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
     Res = case gb_trees:lookup(Name, State#state.prepares) of
         {value, Version} when Version == ExpectedVersion -> {ok, latest};
@@ -256,21 +213,8 @@ do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
     end.
 
 %% @private
-do_execute(State, Name, Params, ExpectedVersion) ->
-    Res = case gb_trees:lookup(Name, State#state.prepares) of
-        {value, Version} when Version == ExpectedVersion -> {ok, latest};
-        {value, Version} -> mysql:get_prepared(Name, Version);
-        none -> mysql:get_prepared(Name)
-    end,
-    case Res of
-        {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
-        {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
-        {error, _} = Err -> Err
-    end.
-
-%% @private
 prepare_and_exec(State, Name, Version, Stmt, Params) ->
-    NameBin = atom_to_binary(Name),
+    NameBin = erlang:atom_to_binary(Name, utf8),
     StmtBin = <<"PREPARE ", NameBin/binary, " FROM '", Stmt/binary, "'">>,
     case do_query(State, StmtBin) of
         {updated, _} ->
@@ -290,13 +234,13 @@ do_execute1(State, Name, Params) ->
 
 %% @private
 make_statements_for_execute(Name, []) ->
-    NameBin = atom_to_binary(Name),
+    NameBin = erlang:atom_to_binary(Name, utf8),
     [<<"EXECUTE ", NameBin/binary>>];
 make_statements_for_execute(Name, Params) ->
     NumParams = length(Params),
     ParamNums = lists:seq(1, NumParams),
 
-    NameBin = atom_to_binary(Name),
+    NameBin = erlang:atom_to_binary(Name, utf8),
     
     ParamNames = lists:foldl(
         fun(Num, Acc) ->
@@ -353,15 +297,9 @@ send_msg(Pid, Msg, _From, _Timeout) ->
     end.
 
 %% @private
-%% @todo Replace with atom_to_binary bif
-atom_to_binary(Val) ->
-    <<_:4/binary, Bin/binary>> = term_to_binary(Val),
-    Bin.
-
-%% @private
 mysql_init(Sock, RecvPid, User, Password) ->
-    case do_recv(RecvPid, undefined) of
-        {ok, Packet, InitSeqNum} ->
+    receive
+        {mysql_recv, RecvPid, data, Packet, InitSeqNum} ->
             {Version, Salt1, Salt2, Caps} = greeting(Packet),
             AuthRes = case Caps band ?SECURE_CONNECTION of
                 ?SECURE_CONNECTION ->
@@ -379,8 +317,8 @@ mysql_init(Sock, RecvPid, User, Password) ->
                 {error, Reason} ->
                     {error, Reason}
             end;
-        {error, Reason} ->
-            {error, Reason}
+        {mysql_recv, RecvPid, closed, _E} ->
+            {error, "mysql_recv: socket was closed"}
     end.
 
 %% @private
