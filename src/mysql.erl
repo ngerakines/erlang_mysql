@@ -172,12 +172,12 @@ fetch(PoolId, Query, Timeout) ->
 
 
 %% @doc Register a prepared statement with the dispatcher. This call does not
-%%   prepare the statement in any connections. The statement is prepared
-%%   lazily in each connection when it is told to execute the statement.
-%%   If the Name parameter matches the name of a statement that has
-%%   already been registered, the version of the statement is incremented
-%%   and all connections that have already prepared the statement will
-%%   prepare it again with the newest version.
+%% prepare the statement in any connections. The statement is prepared
+%% lazily in each connection when it is told to execute the statement.
+%% If the Name parameter matches the name of a statement that has
+%% already been registered, the version of the statement is incremented
+%% and all connections that have already prepared the statement will
+%% prepare it again with the newest version.
 %%
 %% @spec prepare(Name::atom(), Query::iolist()) -> ok
 prepare(Name, Query) ->
@@ -185,14 +185,14 @@ prepare(Name, Query) ->
 
 %% @doc Get the prepared statement with the given name.
 %%
-%%  This function is called from mysql_conn when the connection is
-%%  told to execute a prepared statement it has not yet prepared, or
-%%  when it is told to execute a statement inside a transaction and
-%%  it's not sure that it has the latest version of the statement.
-%%
-%%  If the latest version of the prepared statement matches the Version
-%%  parameter, the return value is {ok, latest}. This saves the cost
-%%  of sending the query when the connection already has the latest version.
+%% This function is called from mysql_conn when the connection is
+%% told to execute a prepared statement it has not yet prepared, or
+%% when it is told to execute a statement inside a transaction and
+%% it's not sure that it has the latest version of the statement.
+%% 
+%% If the latest version of the prepared statement matches the Version
+%% parameter, the return value is {ok, latest}. This saves the cost
+%% of sending the query when the connection already has the latest version.
 %%
 %% @spec get_prepared(Name::atom(), Version::integer()) ->
 %%   {ok, latest} | {ok, Statement::binary()} | {error, Err}
@@ -201,54 +201,46 @@ get_prepared(Name) ->
 get_prepared(Name, Version) ->
     gen_server:call(?SERVER, {get_prepared, Name, Version}).
 
+%% @spec execute(PoolId, Name, Params, Timeout) -> Result
+%%       PoolId = atom()
+%%       Name = atom()
+%%       Params = [term()]
+%%       Timeout = undefined | integer()
+%%       Result = {data, any()} | {updated, any()} | {error, any()}
 %% @doc Execute a query in the connection pool identified by
 %% PoolId. This function optionally accepts a list of parameters to pass
 %% to the prepared statement and a Timeout parameter.
 %% If this function is called inside a transaction, the PoolId paramter is
 %% ignored.
-%%
-%% @spec execute(PoolId::atom(), Name::atom(), Params::[term()],
-%%   Timeout::integer()) -> mysql_result()
-execute(PoolId, Name) when is_atom(PoolId), is_atom(Name) ->
-    execute(PoolId, Name, []).
-
-execute(PoolId, Name, Timeout) when is_integer(Timeout) ->
-    execute(PoolId, Name, [], Timeout);
-
-execute(PoolId, Name, Params) when is_list(Params) ->
-    execute(PoolId, Name, Params, undefined).
-
 execute(PoolId, Name, Params, Timeout) ->
     call_server({execute, PoolId, Name, Params}, Timeout).
 
+%% @spec get_result_field_info(mysql_result()) -> fieldinfo()
 %% @doc Extract the FieldInfo from MySQL Result on data received.
-%%
-%% @spec get_result_field_info(MySQLRes::mysql_result()) ->
-%%   [{Table, Field, Length, Name}]
 get_result_field_info(#mysql_result{fieldinfo = FieldInfo}) -> FieldInfo.
 
 %% @doc Extract the Rows from MySQL Result on data received
 %% 
 %% @spec get_result_rows(MySQLRes::mysql_result()) -> [Row::list()]
-get_result_rows(#mysql_result{rows=AllRows}) -> AllRows.
+get_result_rows(#mysql_result{rows = AllRows}) -> AllRows.
 
 %% @doc Extract the Rows from MySQL Result on update
 %%
 %% @spec get_result_affected_rows(MySQLRes::mysql_result()) ->
 %%           AffectedRows::integer()
-get_result_affected_rows(#mysql_result{affectedrows=AffectedRows}) -> AffectedRows.
+get_result_affected_rows(#mysql_result{affectedrows = AffectedRows}) -> AffectedRows.
 
 %% @doc Extract the insert id from MySQL Result on insert
 %%
 %% @spec get_result_insert_id(MySQLRes::mysql_result()) ->
 %%           InsertID::integer()
-get_result_insert_id(#mysql_result{insert_id=InsertID}) -> InsertID.
+get_result_insert_id(#mysql_result{insert_id = InsertID}) -> InsertID.
 
 %% @doc Extract the error Reason from MySQL Result on error
 %%
 %% @spec get_result_reason(MySQLRes::mysql_result()) ->
 %%    Reason::string()
-get_result_reason(#mysql_result{error=Reason}) -> Reason.
+get_result_reason(#mysql_result{error = Reason}) -> Reason.
 
 init([PoolId, Host, Port, User, Password, Database, Encoding]) ->
     case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of

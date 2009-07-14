@@ -19,8 +19,9 @@
 %%% Copyright (c) 2001-2004 Kungliga Tekniska Högskolan
 %%% See the file COPYING
 
-%% @type mysql_result() = term()
+%% @type mysql_result = {list(), list(), integer(), integer(), integer(), integer(), string(), string()}
 %% @type query_result = {data, mysql_result()} | {updated, mysql_result()} | {error, mysql_result()}
+%% @type fieldinfo =  {term(), term(), term(), term()}
 %% @todo Gut all of the transaction functionality.
 %% @todo Enhance the data receive loops and protect against bad results.
 %% @author Fredrik Thulin <ft@it.su.se>
@@ -457,10 +458,8 @@ get_fields(RecvPid, Res, ?MYSQL_4_1) ->
                     %% OrgField is the real field name if Field is an alias
                     {_OrgField, Rest6} = get_with_length(Rest5),
 
-                    <<_Metadata:8/little, _Charset:16/little,
-                     Length:32/little, Type:8/little,
-                     _Flags:16/little, _Decimals:8/little,
-                     _Rest7/binary>> = Rest6,
+                    %% <<Metadata:8/little, Charset:16/little, Length:32/little, Type:8/little, Flags:16/little, Decimals:8:litle, .../binary>>
+                    <<_:8/little, _:16/little, Length:32/little, Type:8/little, _:16/little, _:8/little, _Rest7/binary>> = Rest6,
 
                     This = {Table, Field, Length, get_field_datatype(Type)},
                     get_fields(RecvPid, [This | Res], ?MYSQL_4_1)
@@ -551,20 +550,15 @@ get_field_datatype(253) -> 'VAR_STRING';
 get_field_datatype(254) -> 'STRING';
 get_field_datatype(255) -> 'GEOMETRY'.
 
+%% @todo Handle leftovers.
 convert_type(Val, ColType) ->
     case ColType of
-        T when T == 'TINY';
-            T == 'SHORT';
-            T == 'LONG';
-            T == 'LONGLONG';
-            T == 'INT24';
-            T == 'YEAR' ->
-                list_to_integer(binary_to_list(Val));
-        T when T == 'TIMESTAMP';
-            T == 'DATETIME' ->
-                {ok, [Year, Month, Day, Hour, Minute, Second], _Leftovers} =
-                io_lib:fread("~d-~d-~d ~d:~d:~d", binary_to_list(Val)),
-                {datetime, {{Year, Month, Day}, {Hour, Minute, Second}}};
+        T when T == 'TINY'; T == 'SHORT'; T == 'LONG'; T == 'LONGLONG'; T == 'INT24'; T == 'YEAR' ->
+            list_to_integer(binary_to_list(Val));
+        T when T == 'TIMESTAMP'; T == 'DATETIME' ->
+            {ok, [Year, Month, Day, Hour, Minute, Second], _Leftovers} =
+            io_lib:fread("~d-~d-~d ~d:~d:~d", binary_to_list(Val)),
+            {datetime, {{Year, Month, Day}, {Hour, Minute, Second}}};
         'TIME' ->
             {ok, [Hour, Minute, Second], _Leftovers} =
             io_lib:fread("~d:~d:~d", binary_to_list(Val)),
@@ -573,16 +567,12 @@ convert_type(Val, ColType) ->
             {ok, [Year, Month, Day], _Leftovers} =
             io_lib:fread("~d-~d-~d", binary_to_list(Val)),
             {date, {Year, Month, Day}};
-        T when T == 'DECIMAL';
-            T == 'NEWDECIMAL';
-            T == 'FLOAT';
-            T == 'DOUBLE' ->
-                {ok, [Num], _Leftovers} =
-                case io_lib:fread("~f", binary_to_list(Val)) of
-                    {error, _} -> io_lib:fread("~d", binary_to_list(Val));
-                    Res -> Res
-                end,
-                Num;
+        T when T == 'DECIMAL'; T == 'NEWDECIMAL'; T == 'FLOAT'; T == 'DOUBLE' ->
+            {ok, [Num], _Leftovers} = case io_lib:fread("~f", binary_to_list(Val)) of
+                {error, _} -> io_lib:fread("~d", binary_to_list(Val));
+                Res -> Res
+            end,
+            Num;
         _Other ->
             Val
     end.
