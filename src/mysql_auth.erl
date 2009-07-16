@@ -37,7 +37,12 @@
 %%       Salt = string()
 %% @doc Performs old-style MySQL authenticaion.
 do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt) ->
-    Auth = password_old(Password, Salt),
+    Auth = case Password of
+      none ->
+        <<>>;
+      _ ->
+        password_old(Password, Salt)
+    end,
     Packet = make_auth(User, Auth),
     do_send(Sock, Packet, SeqNum),
     mysql_conn:do_recv(RecvPid, SeqNum).
@@ -51,7 +56,12 @@ do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt) ->
 %%       Salt = string()
 %% @doc Performs MySQL authenticaion.
 do_new_auth(Sock, RecvPid, SeqNum, User, Password, Salt, Salt2) ->
-    Auth = password_new(Password, Salt ++ Salt2),
+  Auth = case Password of
+    none ->
+      <<>>;
+    _ ->
+      password_new(Password, Salt ++ Salt2)
+    end,
     Packet2 = make_new_auth(User, Auth, none),
     do_send(Sock, Packet2, SeqNum),
     case mysql_conn:do_recv(RecvPid, SeqNum) of
