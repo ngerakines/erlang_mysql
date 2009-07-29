@@ -35,17 +35,13 @@
 -export([init/8, do_recv/2]).
 
 -include("mysql.hrl").
--record(state, {mysql_version, recv_pid, socket, data, prepares = gb_trees:empty(), pool_id}).
+-record(state, {mysql_version, recv_pid, socket, data, prepares = gb_trees:empty(), pool_id, last}).
 
 -define(SECURE_CONNECTION, 32768).
 -define(MYSQL_QUERY_OP, 3).
 -define(DEFAULT_STANDALONE_TIMEOUT, 5000).
 -define(MYSQL_4_0, 40). %% Support for MySQL 4.0.x
 -define(MYSQL_4_1, 41). %% Support for MySQL 4.1.x et 5.0.x
-
-%% Used by transactions to get the state variable for this connection
-%% when bypassing the dispatcher.
--define(STATE_VAR, mysql_connection_state).
 
 %% @spec start(Host, Port, User, Password, Database, Encoding, PoolId) -> Result
 %%       Host = string()
@@ -201,30 +197,28 @@ do_queries(Sock, RecvPid, Queries, Version) ->
     ).
 
 %% @private
-do_execute(State, Name, Params, ExpectedVersion, Stmt) ->
-    Res = case gb_trees:lookup(Name, State#state.prepares) of
-        {value, Version} when Version == ExpectedVersion -> {ok, latest};
-        {value, Version} -> {ok, {Stmt, Version}};
-        none -> {ok, {Stmt, 1}}
-    end,
-    case Res of
-        {ok, latest} -> {ok, do_execute1(State, Name, Params), State};
-        {ok, {Stmt, NewVersion}} -> prepare_and_exec(State, Name, NewVersion, Stmt, Params);
-        {error, _} = Err -> Err
+do_execute(State, Name, Params, _ExpectedVersion, Stmt) ->
+    io:format("Executing ~p~n", [Name]),
+    case State#state.last of
+        {Name, Stmt} -> {ok, do_execute1(State, Name, Params), State};
+        _ -> prepare_and_execute(State, Name, Stmt, Params)
     end.
 
 %% @private
-prepare_and_exec(State, Name, Version, Stmt, Params) ->
+prepare_and_execute(State, Name, Stmt, Params) ->
     NameBin = erlang:atom_to_binary(Name, utf8),
     StmtBin = <<"PREPARE ", NameBin/binary, " FROM '", Stmt/binary, "'">>,
     case do_query(State, StmtBin) of
         {updated, _} ->
             State1 = State#state{
-                prepares = gb_trees:enter(Name, Version, State#state.prepares)
+                last = {Name, Stmt}
             },
             {ok, do_execute1(State1, Name, Params), State1};
-        {error, _} = Err -> Err;
+        {error, _} = Err ->
+            io:format("Error ~p~n", [Err]),
+            Err;
         Other ->
+            io:format("Other ~p~n", [Other]),
             {error, {unexpected_result, Other}}
     end.
 
@@ -291,6 +285,7 @@ do_fetch(Pid, Queries, From, Timeout) ->
 
 %% @private
 send_msg(Pid, Msg, _From, _Timeout) ->
+    io:format("Sending to '~p' msg ~p~n", [Pid, Msg]),
     {ok, Response} = gen:call(Pid, '$mysql_conn_loop', Msg),
     case Response of
         {fetch_result, _Pid, Result} -> Result;

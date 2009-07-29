@@ -32,7 +32,7 @@
 
 -record(state, {socket, parent, data}).
 -define(SECURE_CONNECTION, 32768).
--define(CONNECT_TIMEOUT, 500000).
+-define(CONNECT_TIMEOUT, 5000). %% 5 seconds should be enough
 
 %% @spec start_link(Host, Port, Parent) -> Result
 %%       Host = string()

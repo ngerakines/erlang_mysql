@@ -82,16 +82,12 @@
 %% Records
 -include("mysql.hrl").
 
--record(conn, {pool_id, pid, reconnect, host, port, user, password, database, encoding}).
--record(state, {
-    conn_pools = gb_trees:empty(),
-    pids_pools = gb_trees:empty(),
-    prepares = gb_trees:empty()
-}).
+-record(conn, {pool_name, pid, reconnect, host, port, user, password, database, encoding}).
+-record(state, {connections = gb_trees:empty(), pools = [], prepares = gb_trees:empty()}).
+-record(pool, {name, members = []}).
 
 %% Macros
 -define(SERVER, mysql_dispatcher).
--define(STATE_VAR, mysql_connection_state).
 -define(CONNECT_TIMEOUT, 5000).
 -define(LOCAL_FILES, 128).
 -define(PORT, 3306).
@@ -123,40 +119,14 @@ start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
 %%      {ok, ConnPid} | {error, Reason}
 %% @doc Add an additional MySQL connection to a given pool.
 %% @spec connect(PoolId, Host, Port, User, Password, Database, Encoding) -> Result
-connect(PoolId, Host, undefined, User, Password, Database, Encoding) ->
-    connect(PoolId, Host, ?PORT, User, Password, Database, Encoding);
-connect(PoolId, Host, Port, User, Password, Database, Encoding) ->
-    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
-        {ok, ConnPid} ->
-            Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
-            case gen_server:call(?SERVER, {add_conn, Conn}) of
-                ok -> {ok, ConnPid};
-                Res -> Res
-            end;
-        Err-> Err
-    end.
-
-new_conn(PoolId, ConnPid, Reconnect, Host, Port, User, Password, Database, Encoding) ->
-    case Reconnect of
-        true ->
-            #conn{
-                pool_id = PoolId,
-                pid = ConnPid,
-                reconnect = true,
-                host = Host,
-                port = Port,
-                user = User,
-                password = Password,
-                database = Database,
-                encoding = Encoding
-            };
-        false ->                        
-            #conn{
-                pool_id = PoolId,
-                pid = ConnPid,
-                reconnect = false
-            }
-    end.
+connect(PoolName, Host, undefined, User, Password, Database, Encoding) ->
+    connect(PoolName, Host, ?PORT, User, Password, Database, Encoding);
+connect(PoolName, Host, Port, User, Password, Database, Encoding) ->
+    gen_server:call(?SERVER, {add_connection, #conn{
+        pool_name = PoolName, reconnect = true, host = Host,
+        port = Port, user = User, password = Password, database = Database,
+        encoding = Encoding
+    }}).
 
 %% @doc Send a query to a connection from the connection pool and wait
 %%   for the result. If this function is called inside a transaction,
@@ -170,7 +140,6 @@ fetch(PoolId, Query) ->
 fetch(PoolId, Query, Timeout) -> 
     call_server({fetch, PoolId, Query}, Timeout).
 
-
 %% @doc Register a prepared statement with the dispatcher. This call does not
 %% prepare the statement in any connections. The statement is prepared
 %% lazily in each connection when it is told to execute the statement.
@@ -182,24 +151,6 @@ fetch(PoolId, Query, Timeout) ->
 %% @spec prepare(Name::atom(), Query::iolist()) -> ok
 prepare(Name, Query) ->
     gen_server:cast(?SERVER, {prepare, Name, Query}).
-
-%% @doc Get the prepared statement with the given name.
-%%
-%% This function is called from mysql_conn when the connection is
-%% told to execute a prepared statement it has not yet prepared, or
-%% when it is told to execute a statement inside a transaction and
-%% it's not sure that it has the latest version of the statement.
-%% 
-%% If the latest version of the prepared statement matches the Version
-%% parameter, the return value is {ok, latest}. This saves the cost
-%% of sending the query when the connection already has the latest version.
-%%
-%% @spec get_prepared(Name::atom(), Version::integer()) ->
-%%   {ok, latest} | {ok, Statement::binary()} | {error, Err}
-get_prepared(Name) ->
-    get_prepared(Name, undefined).
-get_prepared(Name, Version) ->
-    gen_server:call(?SERVER, {get_prepared, Name, Version}).
 
 %% @spec execute(PoolId, Name, Params, Timeout) -> Result
 %%       PoolId = atom()
@@ -242,18 +193,25 @@ get_result_insert_id(#mysql_result{insert_id = InsertID}) -> InsertID.
 %%    Reason::string()
 get_result_reason(#mysql_result{error = Reason}) -> Reason.
 
-init([PoolId, Host, Port, User, Password, Database, Encoding]) ->
-    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolId) of
+init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
+    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolName) of
         {ok, ConnPid} ->
-            Conn = new_conn(PoolId, ConnPid, true, Host, Port, User, Password, Database, Encoding),
-            {ok, add_conn(Conn, #state{ })};
+            State = add_connection(
+                #state{ },
+                #conn{
+                    pool_name = PoolName, pid = ConnPid, reconnect = true, host = Host,
+                    port = Port, user = User, password = Password, database = Database,
+                    encoding = Encoding
+                }
+            ),
+            {ok, State};
         {error, Reason} ->
-            {stop, {error, Reason}}
+            {stop, Reason}
     end.
 
 handle_call({fetch, PoolId, Query}, From, State) ->
-    with_next_conn(
-        PoolId, State,
+    do_work(
+        State, PoolId,
         fun(Conn, State1) ->
             Pid = Conn#conn.pid,
             Results = mysql_conn:fetch(Pid, Query, From),
@@ -261,33 +219,35 @@ handle_call({fetch, PoolId, Query}, From, State) ->
         end
     );
 
-handle_call({get_prepared, Name, Version}, _From, State) ->
-    case gb_trees:lookup(Name, State#state.prepares) of
-        none ->
-            {reply, {error, {undefined, Name}}, State};
-        {value, {_StmtBin, Version1}} when Version1 == Version ->
-            {reply, {ok, latest}, State};
-        {value, Stmt} ->
-            {reply, {ok, Stmt}, State}
-    end;
-
-handle_call({execute, PoolId, Name, Params}, From, State) ->
-    with_next_conn(
-        PoolId, State,
-        fun(Conn, State1) ->
-            case gb_trees:lookup(Name, State1#state.prepares) of
-                none ->
-                    {reply, {error, {no_such_statement, Name}}, State1};
-                {value, {Stmt, Version}} ->
-                    Response = mysql_conn:execute(Conn#conn.pid, Name, Version, Params, From, Stmt),
-                    {reply, Response, State1}
-            end
+handle_call({execute, Pool, StatementName, Params}, From, State) ->
+    do_work(
+        State, Pool,
+        fun (Conn, NextState) ->
+            {StatementName1, StatementSQL1, StatementVersion1} = case gb_trees:lookup(StatementName, NextState#state.prepares) of
+                none -> {none, StatementName, 1};
+                {value, {StatementSQL, StatementVersion}} -> {StatementName, StatementSQL, StatementVersion}
+            end,
+            Response = mysql_conn:execute(
+                Conn#conn.pid,
+                StatementName1,
+                StatementVersion1,
+                Params,
+                From,
+                StatementSQL1
+            ),
+            {reply, Response, NextState}
         end
     );
 
-handle_call({add_conn, Conn}, _From, State) ->
-    NewState = add_conn(Conn, State),
-    {reply, ok, NewState}.
+handle_call({add_connection, Conn}, _From, State) ->
+    {Resp, NewState} = case mysql_conn:start_link(Conn#conn.host, Conn#conn.port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding, Conn#conn.pool_name) of
+        {ok, ConnPid} ->
+            {ok, add_connection(State, Conn#conn{ pid = ConnPid })};
+        Err ->
+            error_logger:error_report({?MODULE, ?LINE, {error, Err}}),
+            {Err, State}
+    end,
+    {reply, Resp, NewState}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
     Version1 = case gb_trees:lookup(Name, State#state.prepares) of
@@ -300,110 +260,107 @@ handle_cast({prepare, Name, Stmt}, State) ->
 %% The 'reconnect' flag was set to true for the connection, we attempt
 %% to establish a new connection to the database.
 handle_info({'DOWN', _MonitorRef, process, Pid, _Info}, State) ->
-    case remove_conn(Pid, State) of
-        {ok, Conn, NewState} ->
-            case Conn#conn.reconnect of
-                true -> start_reconnect(Conn);
-                false -> ok
-            end,
-            {noreply, NewState};
-        error ->
-            {noreply, State}
-    end.
+    io:format("Pid went down~n"),
+    NewState = remove_connection(State, Pid),
+    {noreply, NewState}.
+    % case remove_conn(Pid, State) of
+    %     {ok, Conn, NewState} when Conn#conn.reconnect == true -> start_reconnect(Conn), {noreply, NewState};
+    %     {ok, _, NewState} -> {noreply, NewState};
+    %     error ->
+    %         {noreply, State}
+    % end.
     
 terminate(Reason, _State) -> Reason.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-%% Internal functions
-
-with_next_conn(PoolId, State, Fun) ->
-    case get_next_conn(PoolId, State) of
-        {ok, Conn, NewState} ->    
-            Fun(Conn, NewState);
-        error ->
-            {reply, {error, {no_connection_in_pool, PoolId}}, State}
+init_pool(State, Name) ->
+    case lists:keymember(Name, 2, State#state.pools) of
+        true -> {error, pool_exists};
+        false ->
+            State#state{ pools = [ #pool{ name = Name } | State#state.pools]}
     end.
+
+has_pool(State, PoolName) ->
+    lists:keymember(PoolName, 2, State#state.pools).
+
+%% @spec add_member(State, PoolName, Value) -> Result
+add_member(State, PoolName, Value) ->
+    case lists:keyfind(PoolName, 2, State#state.pools) of
+        false -> {error, pool_doesnt_exist};
+        Pool ->
+            case lists:member(Value, Pool#pool.members) of
+                true -> {error, already_member};
+                false ->
+                    NewPool = Pool#pool{ members = [Value | Pool#pool.members] },
+                    State#state{
+                        pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+                    }
+            end
+    end.
+
+%% @spec has_member(State, PoolName, Value) -> Result
+has_member(State, PoolName, Value) ->
+    case lists:keyfind(PoolName, 2, State#state.pools) of
+        false -> {error, pool_doesnt_exist};
+        Pool -> lists:member(Value, Pool#pool.members)
+    end.
+
+%% @spec next_member(State, PoolName) -> Result
+next_member(State, PoolName) ->
+    case lists:keyfind(PoolName, 2, State#state.pools) of
+        false -> {error, pool_doesnt_exist};
+        Pool ->
+            [NextMember | Others] = Pool#pool.members,
+            NewPool = Pool#pool{ members = Others ++ [NextMember] },
+            NewState = State#state{
+                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+            },
+            {ok, NextMember, NewState}
+    end.
+
+%% @spec remove_member(State, PoolName, Member) -> Result
+remove_member(State, PoolName, Member) ->
+    case lists:keyfind(PoolName, 2, State#state.pools) of
+        false -> {error, pool_doesnt_exist};
+        Pool ->
+            NewPool = Pool#pool{ members = lists:delete(Member, Pool#pool.members) },
+            NewState = State#state{
+                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+            },
+            {ok, NewState}
+    end.
+
+do_work(State, PoolName, Fun) ->
+    {ok, Pid, NewState} = next_member(State, PoolName),
+    {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
+    Fun(Connection, NewState).
 
 call_server(Msg, Timeout) when Timeout == undefined ->
     gen_server:call(?SERVER, Msg);
 call_server(Msg, Timeout) ->
     gen_server:call(?SERVER, Msg, Timeout).
 
-add_conn(Conn, State) ->
-    Pid = Conn#conn.pid,
-    erlang:monitor(process, Conn#conn.pid),
-    PoolId = Conn#conn.pool_id,
-    ConnPools = State#state.conn_pools,
-    NewPool =  case gb_trees:lookup(PoolId, ConnPools) of
-        none -> {[Conn],[]};
-        {value, {Unused, Used}} -> {[Conn | Unused], Used}
+add_connection(State, Connection) ->
+    State1 = case has_pool(State, Connection#conn.pool_name) of
+        true -> State;
+        false ->
+            init_pool(State, Connection#conn.pool_name)
     end,
-    State#state{
-        conn_pools = gb_trees:enter(PoolId, NewPool, ConnPools),
-        pids_pools = gb_trees:enter(Pid, PoolId, State#state.pids_pools)
+    State2 = add_member(State1, Connection#conn.pool_name, Connection#conn.pid),
+    erlang:monitor(process, Connection#conn.pid),
+    State2#state{
+        connections = gb_trees:enter(Connection#conn.pid, Connection, State2#state.connections)
     }.
 
-remove_pid_from_list(Pid, Conns) ->
-    lists:foldl(
-        fun (OtherConn, {NewConns, undefined}) ->
-            if
-                OtherConn#conn.pid == Pid -> {NewConns, OtherConn};
-                true -> {[OtherConn | NewConns], undefined}
-            end;
-            (OtherConn, {NewConns, FoundConn}) ->
-                {[OtherConn|NewConns], FoundConn}
-        end,
-        {[],undefined}, lists:reverse(Conns)
-    ).
+remove_connection(Pid, State) ->
+    {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
+    State1 = remove_member(State, Connection#conn.pool_name, Pid),
+    State1#state{
+        connections = gb_trees:delete(Pid, State1#state.connections)
+    }.
 
-remove_pid_from_lists(Pid, Conns1, Conns2) ->
-    case remove_pid_from_list(Pid, Conns1) of
-        {NewConns1, undefined} ->
-            {NewConns2, Conn} = remove_pid_from_list(Pid, Conns2),
-            {Conn, {NewConns1, NewConns2}};
-        {NewConns1, Conn} ->
-            {Conn, {NewConns1, Conns2}}
-    end.
-    
-remove_conn(Pid, State) ->
-    PidsPools = State#state.pids_pools,
-    case gb_trees:lookup(Pid, PidsPools) of
-        none ->
-            error;
-        {value, PoolId} ->
-            ConnPools = State#state.conn_pools,
-            case gb_trees:lookup(PoolId, ConnPools) of
-            none ->
-                error;
-            {value, {Unused, Used}} ->
-                {Conn, NewPool} = remove_pid_from_lists(Pid, Unused, Used),
-                NewConnPools = gb_trees:enter(PoolId, NewPool, ConnPools),
-                {ok, Conn, State#state{
-                    conn_pools = NewConnPools,
-                    pids_pools = gb_trees:delete(Pid, PidsPools)
-                }}
-            end
-    end.
-
-get_next_conn(PoolId, State) ->
-    ConnPools = State#state.conn_pools,
-    case gb_trees:lookup(PoolId, ConnPools) of
-        none ->
-            error;
-        {value, {[],[]}} ->
-            error;
-        {value, {[], Used}} ->
-            [Conn | Conns] = lists:reverse(Used),
-            {ok, Conn, State#state{
-                conn_pools = gb_trees:enter(PoolId, {Conns, [Conn]}, ConnPools)
-            }};
-        {value, {[Conn|Unused], Used}} ->
-            {ok, Conn, State#state{
-                conn_pools = gb_trees:enter(PoolId, {Unused, [Conn|Used]}, ConnPools)
-            }}
-    end.
-
+%% @private
 %% @todo This should probably be monitored somehow.
 start_reconnect(Conn) ->
     spawn_link(fun () ->
@@ -411,8 +368,9 @@ start_reconnect(Conn) ->
     end),
     ok.
 
+%% @private
 reconnect_loop(Conn, N) ->
-    {PoolId, Host, Port} = {Conn#conn.pool_id, Conn#conn.host, Conn#conn.port},
+    {PoolId, Host, Port} = {Conn#conn.pool_name, Conn#conn.host, Conn#conn.port},
     case connect(PoolId, Host, Port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding) of
         {ok, _ConnPid} ->
             ok;
@@ -420,7 +378,6 @@ reconnect_loop(Conn, N) ->
             timer:sleep(5 * 1000),
             reconnect_loop(Conn, N + 1)
     end.
-
 
 %% @doc Encode a value so that it can be included safely in a MySQL query.
 %%
@@ -462,6 +419,7 @@ encode({Time1, Time2, Time3}, false) ->
 encode(Val, _AsBinary) ->
     {error, {unrecognized_value, Val}}.
 
+%% @private
 two_digits(Nums) when is_list(Nums) ->
     [two_digits(Num) || Num <- Nums];
 two_digits(Num) ->
@@ -478,6 +436,7 @@ quote(String) when is_list(String) ->
 quote(Bin) when is_binary(Bin) ->
     list_to_binary(quote(binary_to_list(Bin))).
 
+%% @private
 quote([], Acc) ->
     Acc;
 quote([0 | Rest], Acc) ->

@@ -11,7 +11,7 @@ app:
 
 clean:
 	(cd src;$(MAKE) clean)
-	rm -rf ebin/*.app
+	rm -rf ebin/*.app cover
 
 package: clean
 	@mkdir erlang_mysql-$(VERSION)/ && cp -rf ebin src include support Makefile README erlang_mysql-$(VERSION)
@@ -24,3 +24,7 @@ install:
 
 test: all
 	prove t/*.t
+
+cover: all
+	COVER=1 prove t/*.t
+	erl -detached -noshell -eval 'etap_report:create()' -s init stop
