@@ -12,4 +12,6 @@ main(_) ->
 
     {ok, Pid} = mysql:start_link(test1, Host, 3306, User, Pass, Name, 'utf8'),
     etap:ok(is_process_alive(Pid), "MySQL gen_server running"),
+    X = mysql:connect(test1, Host, 3306, User, Pass, Name, 'utf8'),
+    io:format("X ~p~n", [X]),
     etap:end_tests().

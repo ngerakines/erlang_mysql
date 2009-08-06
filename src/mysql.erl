@@ -105,7 +105,6 @@
 start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
     start_link(PoolId, Host, ?PORT, User, Password, Database, Encoding);
 start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
-    crypto:start(),
     gen_server:start_link(
         {local, ?SERVER},
         ?MODULE,
@@ -152,6 +151,9 @@ fetch(PoolId, Query, Timeout) ->
 prepare(Name, Query) ->
     gen_server:cast(?SERVER, {prepare, Name, Query}).
 
+info() ->
+    gen_server:call(?SERVER, {more_info}).
+
 %% @spec execute(PoolId, Name, Params, Timeout) -> Result
 %%       PoolId = atom()
 %%       Name = atom()
@@ -194,6 +196,7 @@ get_result_insert_id(#mysql_result{insert_id = InsertID}) -> InsertID.
 get_result_reason(#mysql_result{error = Reason}) -> Reason.
 
 init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
+    process_flag(trap_exit, true),
     case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolName) of
         {ok, ConnPid} ->
             State = add_connection(
@@ -247,7 +250,10 @@ handle_call({add_connection, Conn}, _From, State) ->
             error_logger:error_report({?MODULE, ?LINE, {error, Err}}),
             {Err, State}
     end,
-    {reply, Resp, NewState}.
+    {reply, Resp, NewState};
+
+handle_call({more_info}, From, State) ->
+    {reply, State, State}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
     Version1 = case gb_trees:lookup(Name, State#state.prepares) of
@@ -267,7 +273,11 @@ handle_info({'DOWN', _MonitorRef, process, Pid, Info}, State) ->
         true -> ok
     end,
     NewState = remove_connection(State, Pid),
-    {noreply, NewState}.
+    {noreply, NewState};
+
+handle_info(MSG, State) ->
+    error_logger:info_report({?MODULE, ?LINE, {info, MSG}}),
+    {noreply, State}.
 
 terminate(Reason, _State) -> Reason.
 
@@ -352,9 +362,9 @@ add_connection(State, Connection) ->
         connections = gb_trees:enter(Connection#conn.pid, Connection, State2#state.connections)
     }.
 
-remove_connection(Pid, State) ->
+remove_connection(State, Pid) ->
     {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
-    State1 = remove_member(State, Connection#conn.pool_name, Pid),
+    {ok, State1} = remove_member(State, Connection#conn.pool_name, Pid),
     State1#state{
         connections = gb_trees:delete(Pid, State1#state.connections)
     }.
@@ -362,7 +372,7 @@ remove_connection(Pid, State) ->
 %% @private
 %% @todo This should probably be monitored somehow.
 start_reconnect(Conn) ->
-    spawn_link(fun () ->
+    spawn_link(fun() ->
         reconnect_loop(Conn#conn{ pid = undefined }, 0)
     end),
     ok.
@@ -371,9 +381,9 @@ start_reconnect(Conn) ->
 reconnect_loop(Conn, N) ->
     {PoolId, Host, Port} = {Conn#conn.pool_name, Conn#conn.host, Conn#conn.port},
     case connect(PoolId, Host, Port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding) of
-        {ok, _ConnPid} ->
-            ok;
-        {error, _Reason} ->
+        ok -> ok;
+        {error, Reason} ->
+            error_logger:error_report({?MODULE, ?LINE, {error, Reason}}),
             timer:sleep(5 * 1000),
             reconnect_loop(Conn, N + 1)
     end.
