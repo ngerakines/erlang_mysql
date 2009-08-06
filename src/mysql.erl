@@ -259,17 +259,16 @@ handle_cast({prepare, Name, Stmt}, State) ->
 %% Called when a connection to the database has been lost. If
 %% The 'reconnect' flag was set to true for the connection, we attempt
 %% to establish a new connection to the database.
-handle_info({'DOWN', _MonitorRef, process, Pid, _Info}, State) ->
-    io:format("Pid went down~n"),
+handle_info({'DOWN', _MonitorRef, process, Pid, Info}, State) ->
+    error_logger:error_report({?MODULE, ?LINE, {error, Pid, Info}}),
+    {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
+    if
+        Connection#conn.reconnect == true -> start_reconnect(Connection);
+        true -> ok
+    end,
     NewState = remove_connection(State, Pid),
     {noreply, NewState}.
-    % case remove_conn(Pid, State) of
-    %     {ok, Conn, NewState} when Conn#conn.reconnect == true -> start_reconnect(Conn), {noreply, NewState};
-    %     {ok, _, NewState} -> {noreply, NewState};
-    %     error ->
-    %         {noreply, State}
-    % end.
-    
+
 terminate(Reason, _State) -> Reason.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.

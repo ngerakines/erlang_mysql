@@ -198,7 +198,6 @@ do_queries(Sock, RecvPid, Queries, Version) ->
 
 %% @private
 do_execute(State, Name, Params, _ExpectedVersion, Stmt) ->
-    io:format("Executing ~p~n", [Name]),
     case State#state.last of
         {Name, Stmt} -> {ok, do_execute1(State, Name, Params), State};
         _ -> prepare_and_execute(State, Name, Stmt, Params)
@@ -215,10 +214,8 @@ prepare_and_execute(State, Name, Stmt, Params) ->
             },
             {ok, do_execute1(State1, Name, Params), State1};
         {error, _} = Err ->
-            io:format("Error ~p~n", [Err]),
             Err;
         Other ->
-            io:format("Other ~p~n", [Other]),
             {error, {unexpected_result, Other}}
     end.
 
@@ -285,7 +282,6 @@ do_fetch(Pid, Queries, From, Timeout) ->
 
 %% @private
 send_msg(Pid, Msg, _From, _Timeout) ->
-    io:format("Sending to '~p' msg ~p~n", [Pid, Msg]),
     {ok, Response} = gen:call(Pid, '$mysql_conn_loop', Msg),
     case Response of
         {fetch_result, _Pid, Result} -> Result;
