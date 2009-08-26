@@ -1,6 +1,6 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
-%%! -pa ./ebin -boot start_sasl
+%%! -pa ./ebin -boot start_sasl -sasl sasl_error_logger false
 
 main(_) ->
     etap:plan(unknown),
