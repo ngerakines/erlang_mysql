@@ -4,6 +4,7 @@
 
 main(_) ->
     etap:plan(unknown),
+    crypto:start(),
     {Host, User, Pass, Name} = {"localhost", "test", "test", "testdatabase"},
     {ok, Pid} = mysql:start_link(test1, Host, undefined, User, Pass, Name, 'utf8'),
     ok = mysql:connect(test, Host, 3306, User, Pass, Name, 'utf8'),

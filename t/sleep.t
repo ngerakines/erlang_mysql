@@ -11,28 +11,22 @@ main(_) ->
     mysql:prepare(delete_foo, <<"DELETE FROM foo WHERE id = ?">>),
     mysql:prepare(select_foo, <<"SELECT * FROM foo WHERE id = ?">>),
     mysql:prepare(drop_foo, <<"DROP TABLE foo">>),
+    mysql:prepare(sleep, <<"SELECT SLEEP(20)">>),
 
     (fun() ->
         {updated, MySQLRes} = mysql:execute(test1, <<"CREATE TABLE foo (id int(11));">>, [], 8000),
         etap:is(mysql:get_result_affected_rows(MySQLRes), 0, "Creating table"),
         ok
     end)(),
-    
+
     (fun() ->
-        lists:foreach(
-            fun(Data) ->
-                {updated, MySQLRes} = mysql:execute(test1, <<"INSERT INTO foo SET id = ?">>, [Data], 8000),
-                etap:is(mysql:get_result_affected_rows(MySQLRes), 1, "Creating row"),
-                ok
-            end,
-            lists:seq(1, 3)
-        ),
+        X = (catch mysql:execute(test1, sleep, [], 1000)),
         ok
     end)(),
     
     (fun() ->
         {data, MySQLRes} = mysql:fetch(test1, <<"SELECT * FROM foo WHERE id = 1">>),
-        etap:is(mysql:get_result_rows(MySQLRes), [[1]], "Selecting row"),
+        etap:is(mysql:get_result_rows(MySQLRes), [], "Selecting row"),
         ok
     end)(),
 

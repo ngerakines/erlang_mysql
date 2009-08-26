@@ -4,6 +4,7 @@
 
 main(_) ->
     etap:plan(unknown),
+    crypto:start(),
     {Host, User, Pass, Name} = {"localhost", "test", "test", "testdatabase"},
 
     process_flag(trap_exit, true),
