@@ -46,10 +46,10 @@
 start_link(Host, Port, Parent) when is_list(Host), is_integer(Port) ->
     Pid = spawn_link(?MODULE, init, [Host, Port, Parent]),
     receive
-        {error, Err} -> exit(Err);
+        {error, _} = E -> E;
         {Pid, Sock} -> {ok, Pid, Sock}
     after 1000 * 5 ->
-        exit(failed_to_open_socket)
+        {error, failed_to_open_socket}
     end.
 
 %% @private
@@ -64,8 +64,7 @@ init(Host, Port, Parent) ->
             },
             loop(State);
         E ->
-            error_logger:error_msg("connect failed : ~p", [E]),
-            Parent ! {error, E}
+            Parent ! E
     end.
 
 %% @private

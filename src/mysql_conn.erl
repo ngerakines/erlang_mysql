@@ -54,7 +54,20 @@
 %%       PoolId = atom()
 %%       Result = {ok, pid()} | {error, any()}
 start(Host, Port, User, Password, Database, Encoding, PoolId) ->
-   {ok, spawn_link(?MODULE, init, [Host, Port, User, Password, Database, Encoding, PoolId, self()])}.
+	spawn_link(?MODULE, init, [Host, Port, User, Password, Database, Encoding, PoolId, self()]),
+	get_ack().
+	
+get_ack() ->
+	receive
+		Pid when is_pid(Pid) ->
+			{ok, Pid};
+		{error, Error} -> 
+			{error, Error};
+		_ ->
+			get_ack()
+	after 1000 * 5 ->
+		{error, failed_to_open_connection}
+	end.
 
 %% @equiv fetch(Pid, Queries, From, ?DEFAULT_STANDALONE_TIMEOUT)
 fetch(Pid, Queries, From) ->
@@ -87,17 +100,18 @@ close_socket(Pid) ->
     send_msg(Pid, close_socket, fuck_off).
 
 %% @private
-init(Host, Port, User, Password, Database, Encoding, PoolId, _Parent) ->
+init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
     case mysql_recv:start_link(Host, Port, self()) of
         {ok, RecvPid, Sock} ->
             %% (NKG) Does this socket need to be explicitly closed if auth fails?
             case mysql_init(Sock, RecvPid, User, Password) of
                 {ok, Version} ->
                     case set_database(Sock, RecvPid, Version, Database) of
-                        E = {error, _} -> 
-                            exit(E);
+                        {error, _} = E -> 
+                            Parent ! E;
                         ok ->
                             set_encoding(Sock, RecvPid, Version, Encoding),
+							Parent ! self(),
                             loop(#state{
                                 mysql_version = Version,
                                 recv_pid = RecvPid,
@@ -106,19 +120,21 @@ init(Host, Port, User, Password, Database, Encoding, PoolId, _Parent) ->
                                 data     = <<>>
                             })
                     end;
-                {error, _Reason} = E ->
-                    exit(E)
+                {error, _} = E ->
+                    Parent ! E
             end;
-        _E ->
-            exit({error, connect_failed})
+        E ->
+            Parent ! E
     end.
 
 set_database(_, _, _, undefined) -> ok;
 set_database(Sock, RecvPid, Version, Database) ->
     Db = iolist_to_binary(Database),
     case do_query(Sock, RecvPid, <<"use ", Db/binary>>, Version, ?TIMEOUT) of
-        {error, _MySQLRes} -> {error, failed_changing_database};
-        _ -> ok
+        {error, _MySQLRes} -> 
+			{error, failed_changing_database};
+        _ -> 
+			ok
     end.
 
 set_encoding(_, _, _, undefined) -> ok;
@@ -283,7 +299,7 @@ do_recv(RecvPid, SeqNum, Timeout) when SeqNum == undefined, is_integer(Timeout) 
         {mysql_recv, RecvPid, closed, _E} ->
             {error, "mysql_recv: socket was closed"}
     after Timeout ->
-        exit(timeout1)
+        exit(timeout)
     end;
 do_recv(RecvPid, SeqNum, Timeout) when is_integer(SeqNum), is_integer(Timeout) ->
     ResponseNum = SeqNum + 1,
@@ -293,7 +309,7 @@ do_recv(RecvPid, SeqNum, Timeout) when is_integer(SeqNum), is_integer(Timeout) -
         {mysql_recv, RecvPid, closed, _E} ->
             {error, "mysql_recv: socket was closed"}
     after Timeout ->
-        exit(timeout1)
+        exit(timeout)
     end.
 
 %% @private

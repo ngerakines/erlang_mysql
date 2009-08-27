@@ -105,6 +105,7 @@
 start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
     start_link(PoolId, Host, ?PORT, User, Password, Database, Encoding);
 start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
+	crypto:start(),
     gen_server:start_link(
         {local, ?SERVER},
         ?MODULE,
@@ -248,7 +249,6 @@ handle_call({add_connection, Conn}, _From, State) ->
         {ok, ConnPid} ->
             {ok, add_connection(State, Conn#conn{ pid = ConnPid })};
         Err ->
-            error_logger:error_report({?MODULE, ?LINE, {error, Err}}),
             {Err, State}
     end,
     {reply, Resp, NewState};
@@ -323,12 +323,16 @@ next_member(State, PoolName) ->
     case lists:keyfind(PoolName, 2, State#state.pools) of
         false -> {error, pool_doesnt_exist};
         Pool ->
-            [NextMember | Others] = Pool#pool.members,
-            NewPool = Pool#pool{ members = Others ++ [NextMember] },
-            NewState = State#state{
-                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
-            },
-            {ok, NextMember, NewState}
+            case Pool#pool.members of
+				[] ->
+					exit(pool_is_empty);
+				[NextMember | Others] ->
+            		NewPool = Pool#pool{ members = Others ++ [NextMember] },
+		            NewState = State#state{
+		                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+		            },
+		            {ok, NextMember, NewState}
+			end
     end.
 
 %% @spec remove_member(State, PoolName, Member) -> Result
@@ -397,6 +401,7 @@ reset_connection(Conn) ->
         {ok, ConnPid} ->
             Conn#conn{ pid = ConnPid };
         _Err ->
+			io:format("Err ~p~n", [_Err]),
             undefined
     end.
 
