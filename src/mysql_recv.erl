@@ -44,13 +44,19 @@
 %% it has received a MySQL frame, it sends it to Parent and waits for the
 %% next frame.
 start_link(Host, Port, Parent) when is_list(Host), is_integer(Port) ->
-    proc_lib:start_link(?MODULE, init, [Host, Port, Parent], ?CONNECT_TIMEOUT).
+    Pid = spawn_link(?MODULE, init, [Host, Port, Parent]),
+    receive
+        {error, _} = E -> E;
+        {Pid, Sock} -> {ok, Pid, Sock}
+    after 1000 * 5 ->
+        {error, failed_to_open_socket}
+    end.
 
 %% @private
 init(Host, Port, Parent) ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
-            proc_lib:init_ack(Parent, {ok, self(), Sock}),
+            Parent ! {self(), Sock},
             State = #state{
                 socket  = Sock,
                 parent  = Parent,
@@ -58,8 +64,7 @@ init(Host, Port, Parent) ->
             },
             loop(State);
         E ->
-            Msg = lists:flatten(io_lib:format("connect failed : ~p", [E])),
-            proc_lib:init_ack(Parent, {error, Msg})
+            Parent ! E
     end.
 
 %% @private

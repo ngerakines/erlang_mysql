@@ -27,6 +27,7 @@
 -define(SECURE_CONNECTION, 32768).
 -define(CONNECT_WITH_DB, 8).
 -define(MAX_PACKET_SIZE, 1000000).
+-define(TIMEOUT, 8000).
 
 %% @spec do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt) -> any()
 %%       Sock = term()
@@ -45,7 +46,7 @@ do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt) ->
     end,
     Packet = make_auth(User, Auth),
     do_send(Sock, Packet, SeqNum),
-    mysql_conn:do_recv(RecvPid, SeqNum).
+    mysql_conn:do_recv(RecvPid, SeqNum, ?TIMEOUT).
 
 %% @spec do_old_auth(Sock, RecvPid, SeqNum, User, Password, Salt) -> any()
 %%       Sock = term()
@@ -64,13 +65,13 @@ do_new_auth(Sock, RecvPid, SeqNum, User, Password, Salt, Salt2) ->
     end,
     Packet2 = make_new_auth(User, Auth, none),
     do_send(Sock, Packet2, SeqNum),
-    case mysql_conn:do_recv(RecvPid, SeqNum) of
+    case mysql_conn:do_recv(RecvPid, SeqNum, ?TIMEOUT) of
         {ok, Packet3, SeqNum2} ->
             case Packet3 of
                 <<254:8>> ->
                     AuthOld = password_old(Password, Salt),
                     do_send(Sock, <<AuthOld/binary, 0:8>>, SeqNum2 + 1),
-                    mysql_conn:do_recv(RecvPid, SeqNum2 + 1);
+                    mysql_conn:do_recv(RecvPid, SeqNum2 + 1, ?TIMEOUT);
                 _ ->
                     {ok, Packet3, SeqNum2}
             end;

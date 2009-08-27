@@ -11,7 +11,7 @@ main(_) ->
     ok = mysql:connect(test, Host, undefined, User, Pass, Name, 'utf8'),
 
     process_flag(trap_exit, true),
-    etap:is((catch mysql:connect(test, Host, 3305, User, Pass, Name, 'utf8')), {error, connect_failed}, "invalid server"),
+    etap:is((catch mysql:connect(test, Host, 3305, User, Pass, Name, 'utf8')), {error, econnrefused}, "invalid server"),
     process_flag(trap_exit, false),
 
     mysql:prepare(create_foo, <<"CREATE TABLE bar (id int(11));">>),

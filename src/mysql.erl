@@ -105,6 +105,7 @@
 start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
     start_link(PoolId, Host, ?PORT, User, Password, Database, Encoding);
 start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
+	crypto:start(),
     gen_server:start_link(
         {local, ?SERVER},
         ?MODULE,
@@ -137,7 +138,7 @@ fetch(PoolId, Query) ->
     fetch(PoolId, Query, undefined).
 
 fetch(PoolId, Query, Timeout) -> 
-    call_server({fetch, PoolId, Query}, Timeout).
+    call_server({fetch, PoolId, Query, Timeout}).
 
 %% @doc Register a prepared statement with the dispatcher. This call does not
 %% prepare the statement in any connections. The statement is prepared
@@ -166,7 +167,7 @@ info() ->
 %% If this function is called inside a transaction, the PoolId paramter is
 %% ignored.
 execute(PoolId, Name, Params, Timeout) ->
-    call_server({execute, PoolId, Name, Params}, Timeout).
+    call_server({execute, PoolId, Name, Params, Timeout}).
 
 %% @spec get_result_field_info(mysql_result()) -> fieldinfo()
 %% @doc Extract the FieldInfo from MySQL Result on data received.
@@ -197,7 +198,7 @@ get_result_reason(#mysql_result{error = Reason}) -> Reason.
 
 init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
     process_flag(trap_exit, true),
-    case mysql_conn:start_link(Host, Port, User, Password, Database, Encoding, PoolName) of
+    case mysql_conn:start(Host, Port, User, Password, Database, Encoding, PoolName) of
         {ok, ConnPid} ->
             State = add_connection(
                 #state{ },
@@ -212,17 +213,17 @@ init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
             {stop, Reason}
     end.
 
-handle_call({fetch, PoolId, Query}, From, State) ->
+handle_call({fetch, PoolId, Query, Timeout}, From, State) ->
     do_work(
         State, PoolId,
         fun(Conn, State1) ->
             Pid = Conn#conn.pid,
-            Results = mysql_conn:fetch(Pid, Query, From),
+            Results = mysql_conn:fetch(Pid, Query, From, Timeout),
             {reply, Results, State1}
         end
     );
 
-handle_call({execute, Pool, StatementName, Params}, From, State) ->
+handle_call({execute, Pool, StatementName, Params, Timeout}, From, State) ->
     do_work(
         State, Pool,
         fun (Conn, NextState) ->
@@ -236,23 +237,23 @@ handle_call({execute, Pool, StatementName, Params}, From, State) ->
                 StatementVersion1,
                 Params,
                 From,
-                StatementSQL1
+                StatementSQL1,
+                Timeout
             ),
             {reply, Response, NextState}
         end
     );
 
 handle_call({add_connection, Conn}, _From, State) ->
-    {Resp, NewState} = case mysql_conn:start_link(Conn#conn.host, Conn#conn.port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding, Conn#conn.pool_name) of
+    {Resp, NewState} = case mysql_conn:start(Conn#conn.host, Conn#conn.port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding, Conn#conn.pool_name) of
         {ok, ConnPid} ->
             {ok, add_connection(State, Conn#conn{ pid = ConnPid })};
         Err ->
-            error_logger:error_report({?MODULE, ?LINE, {error, Err}}),
             {Err, State}
     end,
     {reply, Resp, NewState};
 
-handle_call({more_info}, From, State) ->
+handle_call({more_info}, _From, State) ->
     {reply, State, State}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
@@ -262,24 +263,26 @@ handle_cast({prepare, Name, Stmt}, State) ->
     end,
     {noreply, State#state{prepares = gb_trees:enter(Name, {Stmt, Version1}, State#state.prepares)}}.
 
-%% Called when a connection to the database has been lost. If
-%% The 'reconnect' flag was set to true for the connection, we attempt
-%% to establish a new connection to the database.
-handle_info({'DOWN', _MonitorRef, process, Pid, Info}, State) ->
-    error_logger:error_report({?MODULE, ?LINE, {error, Pid, Info}}),
-    {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
-    if
-        Connection#conn.reconnect == true -> start_reconnect(Connection);
-        true -> ok
-    end,
-    NewState = remove_connection(State, Pid),
-    {noreply, NewState};
+handle_info({remove_connection, Pid}, State) ->
+    case gb_trees:lookup(Pid, State#state.connections) of
+        {value, #conn{reconnect=true}=Conn0} ->
+            State1 = remove_connection(State, Pid),
+            case reset_connection(Conn0) of
+                undefined ->
+                    {noreply, State1};
+                Conn ->
+                    {noreply, add_connection(State1, Conn)}
+            end;
+        _ ->
+            {noreply, State}
+    end;
 
-handle_info(MSG, State) ->
-    error_logger:info_report({?MODULE, ?LINE, {info, MSG}}),
+handle_info(_MSG, State) ->
     {noreply, State}.
 
-terminate(Reason, _State) -> Reason.
+terminate(Reason, _State) -> 
+    io:format("terminating ~p~n", [Reason]),
+    Reason.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
@@ -320,12 +323,16 @@ next_member(State, PoolName) ->
     case lists:keyfind(PoolName, 2, State#state.pools) of
         false -> {error, pool_doesnt_exist};
         Pool ->
-            [NextMember | Others] = Pool#pool.members,
-            NewPool = Pool#pool{ members = Others ++ [NextMember] },
-            NewState = State#state{
-                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
-            },
-            {ok, NextMember, NewState}
+            case Pool#pool.members of
+				[] ->
+					exit(pool_is_empty);
+				[NextMember | Others] ->
+            		NewPool = Pool#pool{ members = Others ++ [NextMember] },
+		            NewState = State#state{
+		                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+		            },
+		            {ok, NextMember, NewState}
+			end
     end.
 
 %% @spec remove_member(State, PoolName, Member) -> Result
@@ -345,10 +352,8 @@ do_work(State, PoolName, Fun) ->
     {value, Connection} = gb_trees:lookup(Pid, State#state.connections),
     Fun(Connection, NewState).
 
-call_server(Msg, Timeout) when Timeout == undefined ->
-    gen_server:call(?SERVER, Msg);
-call_server(Msg, Timeout) ->
-    gen_server:call(?SERVER, Msg, Timeout).
+call_server(Msg) ->
+    gen_server:call(?SERVER, Msg, 1000 * 60 * 10).
 
 add_connection(State, Connection) ->
     State1 = case has_pool(State, Connection#conn.pool_name) of
@@ -386,6 +391,18 @@ reconnect_loop(Conn, N) ->
             error_logger:error_report({?MODULE, ?LINE, {error, Reason}}),
             timer:sleep(5 * 1000),
             reconnect_loop(Conn, N + 1)
+    end.
+    
+reset_connection(#conn{pid=Pid}=Conn) when Pid =/= undefined ->
+    mysql_conn:close_socket(Pid),
+    reset_connection(Conn#conn{pid = undefined});
+reset_connection(Conn) ->
+    case mysql_conn:start(Conn#conn.host, Conn#conn.port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding, Conn#conn.pool_name) of
+        {ok, ConnPid} ->
+            Conn#conn{ pid = ConnPid };
+        _Err ->
+			io:format("Err ~p~n", [_Err]),
+            undefined
     end.
 
 %% @doc Encode a value so that it can be included safely in a MySQL query.
