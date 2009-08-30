@@ -223,7 +223,15 @@ do_queries(Sock, RecvPid, Queries, Version, Timeout) ->
 do_execute(State, Name, Params, _ExpectedVersion, Stmt, Timeout) ->
     case State#state.last of
         {Name, Stmt} -> {ok, do_execute1(State, Name, Params, Timeout), State};
-        _ -> prepare_and_execute(State, Name, Stmt, Params, Timeout)
+        {OldName, _} ->
+            OldNameBin = erlang:atom_to_binary(OldName, utf8),
+            case do_query(State#state.socket, State#state.recv_pid, <<"DEALLOCATE PREPARE ", OldNameBin/binary>>, State#state.mysql_version, 1000) of
+                {updated, _} -> prepare_and_execute(State, Name, Stmt, Params, Timeout);
+                {error, Err} -> {error, Err};
+                Other -> {error, {unexpected_result, Other}}
+            end;
+        undefined ->
+            prepare_and_execute(State, Name, Stmt, Params, Timeout)
     end.
 
 %% @private
