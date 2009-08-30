@@ -3,7 +3,7 @@
 %%! -pa ./ebin -boot start_sasl -sasl sasl_error_logger false
 
 main(_) ->
-    etap:plan(unknown),
+    etap:plan(3),
     crypto:start(),
     {Host, User, Pass, Name} = {"localhost", "test", "test", "testdatabase"},
 
