@@ -54,20 +54,42 @@
 %%       PoolId = atom()
 %%       Result = {ok, pid()} | {error, any()}
 start(Host, Port, User, Password, Database, Encoding, PoolId) ->
-	spawn_link(?MODULE, init, [Host, Port, User, Password, Database, Encoding, PoolId, self()]),
-	get_ack().
-	
-get_ack() ->
-	receive
-		Pid when is_pid(Pid) ->
-			{ok, Pid};
-		{error, Error} -> 
-			{error, Error};
-		_ ->
-			get_ack()
-	after 1000 * 5 ->
-		{error, failed_to_open_connection}
-	end.
+    Pid = proc_lib:spawn_link(?MODULE, init, [Host, Port, User, Password, Database, Encoding, PoolId, self()]),
+    get_ack(Pid).
+
+%% @private
+get_ack(Pid) ->
+    receive
+        Pid -> {ok, Pid};
+        {error, Error} ->  {error, Error};
+        _ -> get_ack(Pid)
+    after 1000 * 5 ->
+        {error, failed_to_open_connection}
+    end.
+
+%% @private
+init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
+    case mysql_recv:start_link(Host, Port, self()) of
+        {ok, RecvPid, Sock} ->
+            case mysql_init(Sock, RecvPid, User, Password) of
+                {ok, Version} ->
+                    case set_database(Sock, RecvPid, Version, Database) of
+                        {error, _} = E -> Parent ! E;
+                        ok ->
+                            set_encoding(Sock, RecvPid, Version, Encoding),
+                            Parent ! self(),
+                            loop(#state{
+                                mysql_version = Version,
+                                recv_pid = RecvPid,
+                                socket   = Sock,
+                                pool_id  = PoolId,
+                                data     = <<>>
+                            })
+                    end;
+                {error, _} = E -> Parent ! E
+            end;
+        E -> Parent ! E
+    end.
 
 %% @equiv fetch(Pid, Queries, From, ?DEFAULT_STANDALONE_TIMEOUT)
 fetch(Pid, Queries, From) ->
@@ -95,46 +117,16 @@ execute(Pid, Name, Version, Params, From, Stmt, undefined) ->
     execute(Pid, Name, Version, Params, From, Stmt, ?TIMEOUT);
 execute(Pid, Name, Version, Params, From, Stmt, Timeout) ->
     send_msg(Pid, {execute, Name, Version, Params, From, Stmt, Timeout}, From).
-    
+
 close_socket(Pid) ->
     send_msg(Pid, close_socket, fuck_off).
-
-%% @private
-init(Host, Port, User, Password, Database, Encoding, PoolId, Parent) ->
-    case mysql_recv:start_link(Host, Port, self()) of
-        {ok, RecvPid, Sock} ->
-            %% (NKG) Does this socket need to be explicitly closed if auth fails?
-            case mysql_init(Sock, RecvPid, User, Password) of
-                {ok, Version} ->
-                    case set_database(Sock, RecvPid, Version, Database) of
-                        {error, _} = E -> 
-                            Parent ! E;
-                        ok ->
-                            set_encoding(Sock, RecvPid, Version, Encoding),
-							Parent ! self(),
-                            loop(#state{
-                                mysql_version = Version,
-                                recv_pid = RecvPid,
-                                socket   = Sock,
-                                pool_id  = PoolId,
-                                data     = <<>>
-                            })
-                    end;
-                {error, _} = E ->
-                    Parent ! E
-            end;
-        E ->
-            Parent ! E
-    end.
 
 set_database(_, _, _, undefined) -> ok;
 set_database(Sock, RecvPid, Version, Database) ->
     Db = iolist_to_binary(Database),
     case do_query(Sock, RecvPid, <<"use ", Db/binary>>, Version, ?TIMEOUT) of
-        {error, _MySQLRes} -> 
-			{error, failed_changing_database};
-        _ -> 
-			ok
+        {error, _MySQLRes} -> {error, failed_changing_database};
+        _ -> ok
     end.
 
 set_encoding(_, _, _, undefined) -> ok;
@@ -169,7 +161,6 @@ loop(State) ->
             loop(State);
         {'$mysql_conn_loop', {_From, _Mref}, Unknown} ->
             error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
-            %% exit(unhandled_message);
             loop(State);
         Unknown ->
             error_logger:error_report([?MODULE, ?LINE, {unsuppoted_message, Unknown}]),
@@ -219,7 +210,7 @@ do_queries(Sock, RecvPid, Queries, Version, Timeout) ->
         lists:foldl(
             fun(Query, _LastResponse) ->
                 case do_query(Sock, RecvPid, Query, Version, Timeout) of
-                    {error, _} = Err -> throw(Err);
+                    {error, _} = Err -> exit(Err);
                     Res -> Res
                 end
             end,

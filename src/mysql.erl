@@ -197,7 +197,6 @@ get_result_insert_id(#mysql_result{insert_id = InsertID}) -> InsertID.
 get_result_reason(#mysql_result{error = Reason}) -> Reason.
 
 init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
-    process_flag(trap_exit, true),
     case mysql_conn:start(Host, Port, User, Password, Database, Encoding, PoolName) of
         {ok, ConnPid} ->
             State = add_connection(
@@ -362,7 +361,6 @@ add_connection(State, Connection) ->
             init_pool(State, Connection#conn.pool_name)
     end,
     State2 = add_member(State1, Connection#conn.pool_name, Connection#conn.pid),
-    erlang:monitor(process, Connection#conn.pid),
     State2#state{
         connections = gb_trees:enter(Connection#conn.pid, Connection, State2#state.connections)
     }.
