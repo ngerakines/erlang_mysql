@@ -7,12 +7,10 @@ main(_) ->
     crypto:start(),
     {Host, User, Pass, Name} = {"localhost", "test", "test", "testdatabase"},
     {ok, Pid} = mysql:start_link(test1, Host, undefined, User, Pass, Name, 'utf8'),
-    ok = mysql:connect(test, Host, 3306, User, Pass, Name, 'utf8'),
-    ok = mysql:connect(test, Host, undefined, User, Pass, Name, 'utf8'),
+    ok = mysql:connect(test1, Host, 3306, User, Pass, Name, 'utf8'),
+    ok = mysql:connect(test1, Host, undefined, User, Pass, Name, 'utf8'),
 
-    process_flag(trap_exit, true),
     etap:is((catch mysql:connect(test, Host, 3305, User, Pass, Name, 'utf8')), {error, econnrefused}, "invalid server"),
-    process_flag(trap_exit, false),
 
     mysql:prepare(create_foo, <<"CREATE TABLE bar (id int(11));">>),
     mysql:prepare(insert_foo, <<"INSERT INTO bar SET id = ?">>),
