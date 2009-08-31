@@ -105,7 +105,6 @@
 start_link(PoolId, Host, undefined, User, Password, Database, Encoding) ->
     start_link(PoolId, Host, ?PORT, User, Password, Database, Encoding);
 start_link(PoolId, Host, Port, User, Password, Database, Encoding) ->
-	crypto:start(),
     gen_server:start_link(
         {local, ?SERVER},
         ?MODULE,
@@ -151,9 +150,6 @@ fetch(PoolId, Query, Timeout) ->
 %% @spec prepare(Name::atom(), Query::iolist()) -> ok
 prepare(Name, Query) ->
     gen_server:cast(?SERVER, {prepare, Name, Query}).
-
-info() ->
-    gen_server:call(?SERVER, {more_info}).
 
 %% @spec execute(PoolId, Name, Params, Timeout) -> Result
 %%       PoolId = atom()
@@ -260,10 +256,7 @@ handle_call({add_connection, Conn}, _From, State) ->
         Err ->
             {Err, State}
     end,
-    {reply, Resp, NewState};
-
-handle_call({more_info}, _From, State) ->
-    {reply, State, State}.
+    {reply, Resp, NewState}.
 
 handle_cast({prepare, Name, Stmt}, State) ->
     Version1 = case gb_trees:lookup(Name, State#state.prepares) of
@@ -287,7 +280,6 @@ handle_info(_MSG, State) ->
     {noreply, State}.
 
 terminate(Reason, _State) -> 
-    io:format("terminating ~p~n", [Reason]),
     Reason.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
@@ -317,28 +309,21 @@ add_member(State, PoolName, Value) ->
             end
     end.
 
-%% @spec has_member(State, PoolName, Value) -> Result
-has_member(State, PoolName, Value) ->
-    case lists:keyfind(PoolName, 2, State#state.pools) of
-        false -> {error, pool_doesnt_exist};
-        Pool -> lists:member(Value, Pool#pool.members)
-    end.
-
 %% @spec next_member(State, PoolName) -> Result
 next_member(State, PoolName) ->
     case lists:keyfind(PoolName, 2, State#state.pools) of
         false -> {error, pool_doesnt_exist};
         Pool ->
             case Pool#pool.members of
-				[] ->
-					exit(pool_is_empty);
-				[NextMember | Others] ->
-            		NewPool = Pool#pool{ members = Others ++ [NextMember] },
-		            NewState = State#state{
-		                pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
-		            },
-		            {ok, NextMember, NewState}
-			end
+                [] ->
+                    exit(pool_is_empty);
+                [NextMember | Others] ->
+                    NewPool = Pool#pool{ members = Others ++ [NextMember] },
+                    NewState = State#state{
+                        pools = lists:keyreplace(PoolName, 2, State#state.pools, NewPool)
+                    },
+                    {ok, NextMember, NewState}
+            end
     end.
 
 %% @spec remove_member(State, PoolName, Member) -> Result
@@ -379,25 +364,6 @@ remove_connection(State, Pid) ->
         connections = gb_trees:delete(Pid, State1#state.connections)
     }.
 
-%% @private
-%% @todo This should probably be monitored somehow.
-start_reconnect(Conn) ->
-    spawn_link(fun() ->
-        reconnect_loop(Conn#conn{ pid = undefined }, 0)
-    end),
-    ok.
-
-%% @private
-reconnect_loop(Conn, N) ->
-    {PoolId, Host, Port} = {Conn#conn.pool_name, Conn#conn.host, Conn#conn.port},
-    case connect(PoolId, Host, Port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding) of
-        ok -> ok;
-        {error, Reason} ->
-            error_logger:error_report({?MODULE, ?LINE, {error, Reason}}),
-            timer:sleep(5 * 1000),
-            reconnect_loop(Conn, N + 1)
-    end.
-    
 reset_connection(#conn{pid=Pid}=Conn) when Pid =/= undefined ->
     mysql_conn:close_socket(Pid),
     reset_connection(Conn#conn{pid = undefined});
@@ -405,9 +371,7 @@ reset_connection(Conn) ->
     case mysql_conn:start(Conn#conn.host, Conn#conn.port, Conn#conn.user, Conn#conn.password, Conn#conn.database, Conn#conn.encoding, Conn#conn.pool_name) of
         {ok, ConnPid} ->
             Conn#conn{ pid = ConnPid };
-        _Err ->
-			io:format("Err ~p~n", [_Err]),
-            undefined
+        _ -> undefined
     end.
 
 %% @doc Encode a value so that it can be included safely in a MySQL query.

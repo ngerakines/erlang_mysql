@@ -11,5 +11,5 @@ cat > ebin/erlang_mysql.app << EOF
 ${MODULES}
     ]},
     {registered, []},
-    {applications, [kernel, stdlib]}
+    {applications, [kernel, stdlib, crypto]}
 ]}.
