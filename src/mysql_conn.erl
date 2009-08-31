@@ -322,8 +322,8 @@ send_msg(Pid, Msg, _From) ->
         {fetch_result, _Pid, Result} -> 
             Result;
         {'EXIT', Error} ->
-            error_logger:error_report({?MODULE, send_msg, Error}),
-            whereis(mysql_dispatcher) ! {remove_connection, Pid},
+            %% error_logger:error_report({?MODULE, send_msg, Error}),
+            %% whereis(mysql_dispatcher) ! {remove_connection, Pid},
             {error, #mysql_result{error=lists:flatten(io_lib:format("~p", [Error]))}};
         Other -> 
             Other

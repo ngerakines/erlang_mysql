@@ -215,10 +215,15 @@ init([PoolName, Host, Port, User, Password, Database, Encoding]) ->
 handle_call({fetch, PoolId, Query, Timeout}, From, State) ->
     do_work(
         State, PoolId,
-        fun(Conn, State1) ->
+        fun(Conn, NextState) ->
             Pid = Conn#conn.pid,
-            Results = mysql_conn:fetch(Pid, Query, From, Timeout),
-            {reply, Results, State1}
+            Response = mysql_conn:fetch(Pid, Query, From, Timeout),
+            case Response of
+                {error, Reason} ->
+                    {reply, {error, Reason}, handle_reset(Conn#conn.pid, NextState)};
+                _ ->
+                    {reply, Response, NextState}
+            end
         end
     );
 
@@ -239,7 +244,12 @@ handle_call({execute, Pool, StatementName, Params, Timeout}, From, State) ->
                 StatementSQL1,
                 Timeout
             ),
-            {reply, Response, NextState}
+            case Response of
+                {error, Reason} ->
+                    {reply, {error, Reason}, handle_reset(Conn#conn.pid, NextState)};
+                _ ->
+                    {reply, Response, NextState}
+            end
         end
     );
 
@@ -262,19 +272,16 @@ handle_cast({prepare, Name, Stmt}, State) ->
     end,
     {noreply, State#state{prepares = gb_trees:enter(Name, {Stmt, Version1}, State#state.prepares)}}.
 
-handle_info({remove_connection, Pid}, State) ->
+handle_reset(Pid, State) ->
     case gb_trees:lookup(Pid, State#state.connections) of
-        {value, #conn{reconnect=true}=Conn0} ->
+        {value, #conn{reconnect=true} = Conn0} ->
             State1 = remove_connection(State, Pid),
             case reset_connection(Conn0) of
-                undefined ->
-                    {noreply, State1};
-                Conn ->
-                    {noreply, add_connection(State1, Conn)}
+                undefined -> State1;
+                Conn -> add_connection(State1, Conn)
             end;
-        _ ->
-            {noreply, State}
-    end;
+        _ -> State
+    end.
 
 handle_info(_MSG, State) ->
     {noreply, State}.
