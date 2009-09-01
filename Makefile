@@ -1,5 +1,5 @@
-LIBDIR=`erl -eval 'io:format("~s~n", [code:lib_dir()])' -s init stop -noshell`
-VERSION=3
+LIBDIR=$(shell erl -eval 'io:format("~s~n", [code:lib_dir()])' -s init stop -noshell)
+VERSION=4
 PKGNAME=erlang_mysql
 
 all: app
