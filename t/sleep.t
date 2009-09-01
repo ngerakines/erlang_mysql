@@ -20,7 +20,9 @@ main(_) ->
     end)(),
 
     (fun() ->
-        X = (catch mysql:execute(test1, sleep, [], 1000)),
+        {error, A} = (catch mysql:execute(test1, sleep, [], 1000)),
+        etap:is(mysql:get_result_reason(A), "timeout", "error match"),
+        (catch mysql:fetch(test1, <<"SELECT SLEEP(20)">>, 1000)),
         ok
     end)(),
     

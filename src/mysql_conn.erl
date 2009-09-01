@@ -140,7 +140,7 @@ loop(State) ->
     RecvPid = State#state.recv_pid,
     receive
         {'$mysql_conn_loop', {From, Mref}, {fetch, Queries, Timeout}} ->
-            gen:reply({From, Mref}, do_queries(State, Queries, Timeout)),
+            gen:reply({From, Mref}, (catch do_queries(State, Queries, Timeout))),
             loop(State);
         {'$mysql_conn_loop', {From, Mref}, {execute, Name, Version, Params, _From1, Stmt, Timeout}} ->
             NewState = case do_execute(State, Name, Params, Version, Stmt, Timeout) of    

@@ -9,6 +9,7 @@ main(_) ->
     {ok, Pid} = mysql:start_link(test1, "localhost", 3306, User, Pass, Name, 'utf8'),
 
     mysql:prepare(create_foo, <<"CREATE TABLE foo (id int(11));">>),
+    mysql:prepare(create_foo, <<"CREATE TABLE foo (id int(11));">>),
     mysql:prepare(insert_foo, <<"INSERT INTO foo SET id = ?">>),
     mysql:prepare(delete_foo, <<"DELETE FROM foo WHERE id = ?">>),
     mysql:prepare(select_foo, <<"SELECT * FROM foo WHERE id = ?">>),
@@ -34,6 +35,7 @@ main(_) ->
     
     (fun() ->
         {data, MySQLRes} = mysql:fetch(test1, <<"SELECT * FROM foo WHERE id = 1">>),
+        etap:is(mysql:get_result_field_info(MySQLRes), [{<<"foo">>,<<"id">>,11,'LONG'}], "field info match"),
         etap:is(mysql:get_result_rows(MySQLRes), [[1]], "Selecting row"),
         ok
     end)(),
